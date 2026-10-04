@@ -18,6 +18,12 @@ Unicode true
 !define WEASEL_BUILD 0
 !endif
 
+!ifdef PER_USER
+!define INSTALL_SUFFIX "-user"
+!else
+!define INSTALL_SUFFIX ""
+!endif
+
 !define WEASEL_ROOT $INSTDIR\weasel-${WEASEL_VERSION}
 !define REG_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
 
@@ -25,7 +31,7 @@ Unicode true
 Name "小狼毫 ${WEASEL_VERSION}"
 
 ; The file to write
-OutFile "archives\weasel-${PRODUCT_VERSION}-installer.exe"
+OutFile "archives\weasel-${PRODUCT_VERSION}${INSTALL_SUFFIX}-installer.exe"
 
 VIProductVersion "${WEASEL_VERSION}.${WEASEL_BUILD}"
 VIAddVersionKey /LANG=2052 "ProductName" "小狼毫"
@@ -40,9 +46,11 @@ SetCompressor /SOLID lzma
 
 
 ; Request application privileges for Windows Vista
-RequestExecutionLevel highest
-
-Var PerUser
+!ifdef PER_USER
+RequestExecutionLevel user
+!else
+RequestExecutionLevel admin
+!endif
 
 ;--------------------------------
 
@@ -123,17 +131,18 @@ toquit:
     Quit
   ${EndIf}
 
-  StrCpy $PerUser "1"
-  UserInfo::GetAccountType
-  Pop $R9
-  StrCmp $R9 "Admin" machine_scope user_scope
-
-machine_scope:
-  StrCpy $PerUser "0"
+!ifdef PER_USER
+  SetShellVarContext current
+  ReadRegStr $R0 HKCU "Software\Rime\Weasel" "InstallDir"
+  StrCmp $R0 "" 0 scope_done
+  StrCpy $INSTDIR "$LOCALAPPDATA\Rime"
+!else
   SetShellVarContext all
   ReadRegStr $R0 HKLM "Software\Rime\Weasel" "InstallDir"
   StrCmp $R0 "" 0 scope_done
-  ${If} ${AtLeastWin11}
+  ; The default installation directory
+  ; install x64 build for NativeARM64_WINDOWS11 and NativeAMD64_WINDOWS11
+  ${If} ${AtLeastWin11} ; Windows 11 and above
     ${If} ${IsNativeARM64}
       StrCpy $INSTDIR "$PROGRAMFILES64\Rime"
     ${ElseIf} ${IsNativeAMD64}
@@ -141,23 +150,17 @@ machine_scope:
     ${Else}
       StrCpy $INSTDIR "$PROGRAMFILES\Rime"
     ${Endif}
-  ${Else}
+  ; install x64 build for NativeAMD64_BELLOW_WINDOWS11
+  ${Else} ; Windows 10 or bellow
     ${If} ${IsNativeAMD64}
       StrCpy $INSTDIR "$PROGRAMFILES64\Rime"
     ${Else}
       StrCpy $INSTDIR "$PROGRAMFILES\Rime"
     ${Endif}
   ${Endif}
-  GoTo scope_done
-
-user_scope:
-  SetShellVarContext current
-  ReadRegStr $R0 HKCU "Software\Rime\Weasel" "InstallDir"
-  StrCmp $R0 "" 0 scope_done
-  StrCpy $INSTDIR "$LOCALAPPDATA\Rime"
-
+!endif
 scope_done:
-  ReadRegStr $R0 SHCTX \
+  ReadRegStr $R0 HKLM \
   "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel" \
   "UninstallString"
   StrCmp $R0 "" done
@@ -177,7 +180,11 @@ uninst:
 
 call_uninstaller:
   ExecWait '"$R1\WeaselServer.exe" /quit'
+!ifdef PER_USER
+  ExecWait '"$R1\WeaselSetup.exe" /u /user'
+!else
   ExecWait '"$R1\WeaselSetup.exe" /u'
+!endif
   ; Remove registry keys
   DeleteRegKey SHCTX SOFTWARE\Rime
   DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
@@ -199,6 +206,7 @@ call_uninstaller:
   RMDir   "$R1\data\preview"
   RMDir   "$R1\data"
   RMDir   "$R1"
+  SetShellVarContext all
   Delete  "$SMPROGRAMS\$(DISPLAYNAME)\*.*"
   RMDir  "$SMPROGRAMS\$(DISPLAYNAME)"
   ; Prompt reboot
@@ -224,11 +232,6 @@ Section "Weasel"
 
   ; Reset INSTDIR for the new version
   StrCpy $INSTDIR "${WEASEL_ROOT}"
-
-  StrCmp $PerUser "1" 0 +4
-  CreateDirectory "$INSTDIR"
-  FileOpen $R9 "$INSTDIR\.per-user" w
-  FileClose $R9
 
   IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
   ExecWait '"$INSTDIR\WeaselServer.exe" /quit'
@@ -324,8 +327,9 @@ program_files:
   IfErrors +2 0
   StrCpy $R2 "/t"
 
-  StrCmp $PerUser "1" 0 +2
+!ifdef PER_USER
   StrCpy $R2 "$R2 /user"
+!endif
   ExecWait '"$INSTDIR\WeaselSetup.exe" $R2'
 
   ; Write the uninstall keys for Windows
@@ -378,6 +382,7 @@ SectionEnd
 
 ; Optional section (can be disabled by the user)
 Section "Start Menu Shortcuts"
+  SetShellVarContext all
   CreateDirectory "$SMPROGRAMS\$(DISPLAYNAME)"
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORMANUAL).lnk" "$INSTDIR\README.txt"
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORSETTING).lnk" "$INSTDIR\WeaselDeployer.exe" "" "$SYSDIR\shell32.dll" 21
@@ -398,24 +403,22 @@ SectionEnd
 ; Uninstaller
 
 Function un.onInit
-  StrCpy $PerUser "0"
-  IfFileExists "$INSTDIR\.per-user" 0 machine_uninstall
-  StrCpy $PerUser "1"
+!ifdef PER_USER
   SetShellVarContext current
-  GoTo uninstall_scope_done
-machine_uninstall:
+!else
   SetShellVarContext all
-uninstall_scope_done:
+!endif
 FunctionEnd
 
 Section "Uninstall"
 
   ExecWait '"$INSTDIR\WeaselServer.exe" /quit'
 
-  StrCpy $R2 "/u"
-  StrCmp $PerUser "1" 0 +2
-  StrCpy $R2 "$R2 /user"
-  ExecWait '"$INSTDIR\WeaselSetup.exe" $R2'
+!ifdef PER_USER
+  ExecWait '"$INSTDIR\WeaselSetup.exe" /u /user'
+!else
+  ExecWait '"$INSTDIR\WeaselSetup.exe" /u'
+!endif
 
   ; Remove registry keys
   DeleteRegKey SHCTX SOFTWARE\Rime
@@ -433,12 +436,12 @@ Section "Uninstall"
   Delete  "$INSTDIR\data\opencc\*.*"
   Delete  "$INSTDIR\data\preview\*.*"
   Delete  "$INSTDIR\data\*.*"
-  Delete  "$INSTDIR\.per-user"
   Delete  "$INSTDIR\*.*"
   RMDir  "$INSTDIR\data\opencc"
   RMDir  "$INSTDIR\data\preview"
   RMDir  "$INSTDIR\data"
   RMDir  "$INSTDIR"
+  SetShellVarContext all
   Delete  "$SMPROGRAMS\$(DISPLAYNAME)\*.*"
   RMDir  "$SMPROGRAMS\$(DISPLAYNAME)"
 
