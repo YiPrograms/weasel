@@ -209,7 +209,7 @@ static int Run(LPTSTR lpCmdLine) {
   }
   bool uninstalling = !wcscmp(L"/u", cmd);
   if (uninstalling) {
-    if (IsProcAdmin())
+    if (per_user || IsProcAdmin())
       return uninstall(silent, per_user);
     else
       return RestartAsAdmin(cmd);
