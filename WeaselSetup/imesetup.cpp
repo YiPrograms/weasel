@@ -304,6 +304,13 @@ int uninstall_ime_file(const std::wstring& ext,
     std::wstring imePath = basePath + L"weasel" + ext;
     retval += func(imePath, false, false, false, profile, silent);
     if (is_wow64()) {
+      PVOID oldValue = NULL;
+      if (Wow64DisableWow64FsRedirection(&oldValue) == FALSE) {
+        MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRCANCELFSREDIRECT,
+                              IDS_STR_UNINSTALL_FAILED, MB_ICONERROR | MB_OK);
+        return 1;
+      }
+
       if (is_arm64_machine()) {
         WCHAR sysarm32[MAX_PATH];
         if (get_wow_arm32_system_dir(sysarm32, _countof(sysarm32)) > 0) {
@@ -315,6 +322,12 @@ int uninstall_ime_file(const std::wstring& ext,
       } else {
         std::wstring x64Path = basePath + L"weaselx64" + ext;
         retval += func(x64Path, false, true, false, profile, silent);
+      }
+
+      if (Wow64RevertWow64FsRedirection(oldValue) == FALSE) {
+        MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRRECOVERFSREDIRECT,
+                              IDS_STR_UNINSTALL_FAILED, MB_ICONERROR | MB_OK);
+        return 1;
       }
     }
     return retval;
