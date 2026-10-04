@@ -160,7 +160,7 @@ toquit:
   ${Endif}
 !endif
 scope_done:
-  ReadRegStr $R0 HKLM \
+  ReadRegStr $R0 SHCTX \
   "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel" \
   "UninstallString"
   StrCmp $R0 "" done
@@ -206,7 +206,6 @@ call_uninstaller:
   RMDir   "$R1\data\preview"
   RMDir   "$R1\data"
   RMDir   "$R1"
-  SetShellVarContext all
   Delete  "$SMPROGRAMS\$(DISPLAYNAME)\*.*"
   RMDir  "$SMPROGRAMS\$(DISPLAYNAME)"
   ; Prompt reboot
@@ -382,7 +381,6 @@ SectionEnd
 
 ; Optional section (can be disabled by the user)
 Section "Start Menu Shortcuts"
-  SetShellVarContext all
   CreateDirectory "$SMPROGRAMS\$(DISPLAYNAME)"
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORMANUAL).lnk" "$INSTDIR\README.txt"
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORSETTING).lnk" "$INSTDIR\WeaselDeployer.exe" "" "$SYSDIR\shell32.dll" 21
