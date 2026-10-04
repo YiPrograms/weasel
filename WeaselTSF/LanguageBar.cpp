@@ -288,7 +288,10 @@ void CLangBarItemButton::SetLangbarStatus(DWORD dwStatus, BOOL fSet) {
 
 std::wstring WeaselTSF::_GetRootDir() {
   std::wstring dir{};
-  RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(), L"WeaselRoot", dir);
+  if (RegGetStringValue(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel",
+                        L"WeaselRoot", dir) != ERROR_SUCCESS)
+    RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(), L"WeaselRoot",
+                      dir);
   return dir;
 }
 
@@ -297,7 +300,9 @@ void WeaselTSF::_HandleLangBarMenuSelect(UINT wID) {
   switch (wID) {
     case ID_WEASELTRAY_RERUN_SERVICE:
     case ID_WEASELTRAY_INSTALLDIR:
-      if (RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(),
+      if (RegGetStringValue(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel",
+                            L"WeaselRoot", dir) == ERROR_SUCCESS ||
+          RegGetStringValue(HKEY_LOCAL_MACHINE, GetWeaselRegName(),
                             L"WeaselRoot", dir) == ERROR_SUCCESS) {
         if (wID == ID_WEASELTRAY_RERUN_SERVICE) {
           std::thread th([dir]() {
