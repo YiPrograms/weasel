@@ -166,12 +166,18 @@ static int Run(LPTSTR lpCmdLine) {
   constexpr bool silent = true;
   std::wstring command_line(lpCmdLine);
   bool per_user = false;
-  const std::wstring per_user_arg = L" /user";
-  if (command_line.size() >= per_user_arg.size() &&
-      command_line.compare(command_line.size() - per_user_arg.size(),
-                           per_user_arg.size(), per_user_arg) == 0) {
+  const std::wstring per_user_arg = L"/user";
+  if (command_line == per_user_arg) {
     per_user = true;
-    command_line.resize(command_line.size() - per_user_arg.size());
+    command_line.clear();
+  } else {
+    const std::wstring suffix = L" " + per_user_arg;
+    if (command_line.size() >= suffix.size() &&
+        command_line.compare(command_line.size() - suffix.size(),
+                             suffix.size(), suffix) == 0) {
+      per_user = true;
+      command_line.resize(command_line.size() - suffix.size());
+    }
   }
   LPCTSTR cmd = command_line.c_str();
   // parameter /? or /help to show commandline args
