@@ -608,7 +608,8 @@ int uninstall(bool silent, bool per_user) {
   // 清除注册信息
   HKEY install_root = per_user ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE;
   RegDeleteKey(install_root, WEASEL_REG_KEY);
-  RegDeleteKey(install_root, RIME_REG_KEY);
+  if (!per_user)
+    RegDeleteKey(install_root, RIME_REG_KEY);
 
   // delete WER register,
   // "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\Windows Error
