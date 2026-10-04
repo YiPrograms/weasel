@@ -9,6 +9,26 @@ static const char c_szInfoKeyPrefix[] = "CLSID\\";
 static const char c_szTipKeyPrefix[] = "Software\\Microsft\\CTF\\TIP\\";
 static const char c_szInProcSvr32[] = "InprocServer32";
 static const char c_szModelName[] = "ThreadingModel";
+static const char c_szUserClassesRoot[] = "Software\\Classes";
+
+static bool IsPerUserRegistration() {
+  WCHAR value[2];
+  return GetEnvironmentVariableW(L"WEASEL_PER_USER", value, _countof(value)) > 0;
+}
+
+static BOOL OpenClassesRoot(HKEY* root, bool* close_root) {
+  if (!IsPerUserRegistration()) {
+    *root = HKEY_CLASSES_ROOT;
+    *close_root = false;
+    return TRUE;
+  }
+
+  DWORD disposition;
+  *close_root = true;
+  return RegCreateKeyExA(HKEY_CURRENT_USER, c_szUserClassesRoot, 0, NULL,
+                         REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, root,
+                         &disposition) == ERROR_SUCCESS;
+}
 
 HKL FindIME(LANGID langid) {
   HKL hKL = NULL;
@@ -194,9 +214,11 @@ static LONG RecurseDeleteKeyA(HKEY hParentKey, LPCSTR lpszKey) {
 
 BOOL RegisterServer() {
   DWORD dw;
+  HKEY hClassesRoot;
   HKEY hKey;
   HKEY hSubKey;
   BOOL fRet;
+  bool closeClassesRoot;
   char achIMEKey[ARRAYSIZE(c_szInfoKeyPrefix) + CLSID_STRLEN];
   char achFileName[MAX_PATH];
 
@@ -205,7 +227,10 @@ BOOL RegisterServer() {
     return FALSE;
   memcpy(achIMEKey, c_szInfoKeyPrefix, sizeof(c_szInfoKeyPrefix) - 1);
 
-  if (fRet = RegCreateKeyExA(HKEY_CLASSES_ROOT, achIMEKey, 0, NULL,
+  if (!OpenClassesRoot(&hClassesRoot, &closeClassesRoot))
+    return FALSE;
+
+  if (fRet = RegCreateKeyExA(hClassesRoot, achIMEKey, 0, NULL,
                              REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey,
                              &dw) == ERROR_SUCCESS) {
     fRet &= RegSetValueExA(hKey, NULL, 0, REG_SZ, (BYTE*)TEXTSERVICE_DESC_A,
@@ -217,17 +242,21 @@ BOOL RegisterServer() {
 
 #ifdef _M_ARM64
       {
-        // On ARM64 we use ARM64X redirection DLL.
-        // When loaded, weasel.dll will be redirected to weaselARM64.dll on
-        // ARM64 processes, and weaselx64.dll on x64 processes.
-        //
-        // But GetModuleFileNameA will return the actual loaded DLL name aka
-        // weaselARM64.dll Rewrite the path to point to the redirector.
-
-        char wrapperPath[MAX_PATH];
-        StringCbCatA(achFileName, MAX_PATH, "\\..\\weasel.dll");
-        GetFullPathNameA(achFileName, MAX_PATH, wrapperPath, NULL);
-        memcpy(achFileName, wrapperPath, MAX_PATH);
+        // On ARM64, system-wide installation registers the ARM64X redirector
+        // copied as weasel.dll. Per-user installation keeps the packaged
+        // filename because the x86 weasel.dll lives in the same directory.
+        if (IsPerUserRegistration()) {
+          char* fileName = strrchr(achFileName, '\\');
+          if (fileName)
+            strcpy_s(fileName + 1,
+                     ARRAYSIZE(achFileName) - (fileName + 1 - achFileName),
+                     "weaselARM64X.dll");
+        } else {
+          char wrapperPath[MAX_PATH];
+          StringCbCatA(achFileName, MAX_PATH, "\\..\\weasel.dll");
+          GetFullPathNameA(achFileName, MAX_PATH, wrapperPath, NULL);
+          memcpy(achFileName, wrapperPath, MAX_PATH);
+        }
       }
 #endif
 
@@ -241,16 +270,27 @@ BOOL RegisterServer() {
     }
     RegCloseKey(hKey);
   }
+  if (closeClassesRoot)
+    RegCloseKey(hClassesRoot);
   return fRet;
 }
 
 void UnregisterServer() {
+  HKEY hClassesRoot;
+  bool closeClassesRoot;
   char achIMEKey[ARRAYSIZE(c_szInfoKeyPrefix) + CLSID_STRLEN];
   if (!CLSIDToStringA(c_clsidTextService,
                       achIMEKey + ARRAYSIZE(c_szInfoKeyPrefix) - 1))
     return;
   memcpy(achIMEKey, c_szInfoKeyPrefix, sizeof(c_szInfoKeyPrefix) - 1);
-  RecurseDeleteKeyA(HKEY_CLASSES_ROOT, achIMEKey);
+  if (!OpenClassesRoot(&hClassesRoot, &closeClassesRoot))
+    return;
+  RecurseDeleteKeyA(hClassesRoot, achIMEKey);
+
+  if (closeClassesRoot) {
+    RegCloseKey(hClassesRoot);
+    return;
+  }
 
   // On Windows 8, we need to manually delete the registry key for our TIP
   char tipKey[ARRAYSIZE(c_szTipKeyPrefix) + CLSID_STRLEN];
