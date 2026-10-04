@@ -91,7 +91,7 @@ static int CustomInstall(bool installing, bool per_user) {
   }
   bool _has_installed = has_installed(per_user);
   if (!silent) {
-    InstallOptionsDialog dlg;
+    InstallOptionsDialog dlg(per_user);
     dlg.installed = _has_installed;
     dlg.profile = profile;
     dlg.user_dir = user_dir;

@@ -4,10 +4,10 @@
 #include <ShlObj.h>
 #pragma comment(lib, "Shell32.lib")
 
-int uninstall(bool silent);
+int uninstall(bool silent, bool per_user);
 
-InstallOptionsDialog::InstallOptionsDialog()
-    : installed(false), profile(L"hans"), user_dir() {}
+InstallOptionsDialog::InstallOptionsDialog(bool per_user)
+    : installed(false), profile(L"hans"), user_dir(), per_user_(per_user) {}
 
 InstallOptionsDialog::~InstallOptionsDialog() {}
 
@@ -119,7 +119,7 @@ LRESULT InstallOptionsDialog::OnOK(WORD, WORD code, HWND, BOOL&) {
 
 LRESULT InstallOptionsDialog::OnRemove(WORD, WORD code, HWND, BOOL&) {
   const bool non_silent = false;
-  uninstall(non_silent);
+  uninstall(non_silent, per_user_);
   installed = false;
   CString str;
   str.LoadStringW(IDS_STRING_INSTALL);

@@ -71,7 +71,7 @@ class InstallOptionsDialog : public CDialogImpl<InstallOptionsDialog> {
  public:
   enum { IDD = IDD_INSTALL_OPTIONS };
 
-  InstallOptionsDialog();
+  explicit InstallOptionsDialog(bool per_user = false);
   ~InstallOptionsDialog();
 
   bool installed;
@@ -103,4 +103,5 @@ class InstallOptionsDialog : public CDialogImpl<InstallOptionsDialog> {
   CButton ok_;
   CButton button_custom_dir_;
   CEdit dir_;
+  bool per_user_;
 };
