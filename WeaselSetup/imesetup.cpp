@@ -601,9 +601,8 @@ int uninstall(bool silent, bool per_user) {
   }
 
   // IMM/.ime support removed; only uninstall TSF/.dll
-  retval +=
-      uninstall_ime_file(L".dll", profile, silent, per_user,
-                         &register_text_service);
+  retval += uninstall_ime_file(L".dll", profile, silent, per_user,
+                               &register_text_service);
 
   // 清除注册信息
   HKEY install_root = per_user ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE;
@@ -637,8 +636,8 @@ bool has_installed(bool per_user) {
     WCHAR root[MAX_PATH];
     DWORD size = sizeof(root);
     DWORD type = 0;
-    LSTATUS ret = RegQueryValueExW(hKey, L"WeaselRoot", NULL, &type,
-                                   (LPBYTE)root, &size);
+    LSTATUS ret =
+        RegQueryValueExW(hKey, L"WeaselRoot", NULL, &type, (LPBYTE)root, &size);
     RegCloseKey(hKey);
     return ret == ERROR_SUCCESS && type == REG_SZ && root[0] != L'\0';
   }

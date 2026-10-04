@@ -173,8 +173,8 @@ static int Run(LPTSTR lpCmdLine) {
   } else {
     const std::wstring suffix = L" " + per_user_arg;
     if (command_line.size() >= suffix.size() &&
-        command_line.compare(command_line.size() - suffix.size(),
-                             suffix.size(), suffix) == 0) {
+        command_line.compare(command_line.size() - suffix.size(), suffix.size(),
+                             suffix) == 0) {
       per_user = true;
       command_line.resize(command_line.size() - suffix.size());
     }
@@ -208,7 +208,8 @@ static int Run(LPTSTR lpCmdLine) {
           L"/testing       - Set update channel to testing\n"
           L"/release       - Set update channel to release\n"
           L"/userdir:<dir> - Set user directory\n"
-          L"/user          - Install for the current user (append to install options)\n",
+          L"/user          - Install for the current user (append to install "
+          L"options)\n",
           L"WeaselSetup", MB_ICONINFORMATION | MB_OK);
     }
     return 0;

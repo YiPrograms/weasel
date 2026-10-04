@@ -13,7 +13,8 @@ static const char c_szUserClassesRoot[] = "Software\\Classes";
 
 static bool IsPerUserRegistration() {
   WCHAR value[2];
-  return GetEnvironmentVariableW(L"WEASEL_PER_USER", value, _countof(value)) > 0;
+  return GetEnvironmentVariableW(L"WEASEL_PER_USER", value, _countof(value)) >
+         0;
 }
 
 static BOOL OpenClassesRoot(HKEY* root, bool* close_root) {
