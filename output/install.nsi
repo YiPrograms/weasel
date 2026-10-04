@@ -364,6 +364,11 @@ program_files:
   Exec "$INSTDIR\WeaselServer.exe"
 
   ; option CheckForUpdates
+!ifdef PER_USER
+  ; The shared appcast points to the machine-wide installer. Keep automatic
+  ; updates disabled; manual update opens the releases page for the user build.
+  WriteRegStr HKCU "Software\Rime\Weasel\Updates" "CheckForUpdates" "0"
+!else
   IfSilent DisableAutoCheckUpdate
   MessageBox MB_YESNO|MB_ICONINFORMATION "$(AUTOCHKUPDATE)" IDYES EnableAutoCheckUpdate
   DisableAutoCheckUpdate:
@@ -372,6 +377,7 @@ program_files:
   EnableAutoCheckUpdate:
   WriteRegStr HKCU "Software\Rime\Weasel\Updates" "CheckForUpdates" "1"
   end:
+!endif
 
   ; Prompt reboot
   StrCmp $0 "Upgrade" 0 +2
