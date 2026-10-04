@@ -186,7 +186,11 @@ call_uninstaller:
   ExecWait '"$R1\WeaselSetup.exe" /u'
 !endif
   ; Remove registry keys
+!ifdef PER_USER
+  DeleteRegKey SHCTX SOFTWARE\Rime\Weasel
+!else
   DeleteRegKey SHCTX SOFTWARE\Rime
+!endif
   DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
   ; don't redirect on 64 bit system for auto run setting
   ${If} ${IsNativeARM64}
@@ -429,7 +433,11 @@ Section "Uninstall"
 !endif
 
   ; Remove registry keys
+!ifdef PER_USER
+  DeleteRegKey SHCTX SOFTWARE\Rime\Weasel
+!else
   DeleteRegKey SHCTX SOFTWARE\Rime
+!endif
   DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
   ; don't redirect on 64 bit system for auto run setting
   ${If} ${IsNativeARM64}
