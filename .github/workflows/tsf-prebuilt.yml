@@ -181,7 +181,7 @@ jobs:
           }
           '@ | Set-Content -Path $src -Encoding ascii
 
-          & cl.exe /nologo /EHsc $src /link ole32.lib uuid.lib /out:$exe
+          & cl.exe /nologo /EHsc $src /link ole32.lib uuid.lib advapi32.lib /out:$exe
           if ($LASTEXITCODE -ne 0) {
             throw "Probe compile failed: $LASTEXITCODE"
           }
