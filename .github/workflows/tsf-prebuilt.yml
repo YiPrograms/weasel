@@ -191,7 +191,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $testUser = 'tsfprobe'
-          $testPassword = 'TsfProbe!2026Aa#9xQ'
+          $testPassword = 'TsfProbe!2026A'
           & net.exe user $testUser $testPassword /add /passwordchg:no
           if ($LASTEXITCODE -ne 0) {
             throw "Failed to create standard test user: $LASTEXITCODE"
