@@ -152,6 +152,38 @@ jobs:
               RegCloseKey(key);
           }
 
+          static void print_user_install_state() {
+            CHAR local_app_data[MAX_PATH] = {};
+            DWORD env_len = GetEnvironmentVariableA(
+                "LOCALAPPDATA", local_app_data, ARRAYSIZE(local_app_data));
+            if (env_len > 0 && env_len < ARRAYSIZE(local_app_data))
+              std::printf("LOCALAPPDATA: %s\n", local_app_data);
+
+            HKEY key = nullptr;
+            LSTATUS status = RegOpenKeyExA(HKEY_CURRENT_USER,
+                                           "Software\\Rime\\Weasel", 0,
+                                           KEY_READ, &key);
+            std::printf("HKCU Software\\Rime\\Weasel status: %ld\n",
+                        static_cast<long>(status));
+            if (status != ERROR_SUCCESS)
+              return;
+
+            const char* value_names[] = {"WeaselRoot", "InstallDir"};
+            for (const char* name : value_names) {
+              CHAR value[MAX_PATH] = {};
+              DWORD type = 0;
+              DWORD size = sizeof(value);
+              LSTATUS query = RegQueryValueExA(
+                  key, name, nullptr, &type, reinterpret_cast<BYTE*>(value), &size);
+              if (query == ERROR_SUCCESS)
+                std::printf("HKCU %s: %s\n", name, value);
+              else
+                std::printf("HKCU %s query status: %ld\n", name,
+                            static_cast<long>(query));
+            }
+            RegCloseKey(key);
+          }
+
           int wmain(int argc, wchar_t** argv) {
             HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
             if (FAILED(hr))
@@ -176,6 +208,8 @@ jobs:
 
             if (inspect_mode) {
               print_identity();
+              std::puts("=== User install state ===");
+              print_user_install_state();
               std::puts("=== Registration keys in current user ===");
               print_registration_keys();
               std::puts("=== ProfileMgr in current user ===");
