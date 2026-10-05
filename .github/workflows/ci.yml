@@ -502,6 +502,25 @@ jobs:
           & $probeExe
           $signedTsfProbeExit = $LASTEXITCODE
           Write-Host "Signed TSF API probe exit code: $signedTsfProbeExit"
+          # A signed HKCU-only miss is the experiment result, not the end of
+          # the control test.
+          $global:LASTEXITCODE = 0
+
+          Write-Host 'phase=machine-registration-control'
+          $env:TEXTSERVICE_PROFILE = 'hant'
+          & "$env:WINDIR\System32\regsvr32.exe" /s .\output\weaselx64.dll
+          $machineRegisterExit = $LASTEXITCODE
+          Remove-Item Env:TEXTSERVICE_PROFILE -ErrorAction SilentlyContinue
+          Write-Host "Machine regsvr32 exit code: $machineRegisterExit"
+
+          if ($machineRegisterExit -eq 0) {
+            & $probeExe
+            $machineTsfProbeExit = $LASTEXITCODE
+            Write-Host "Machine TSF API probe exit code: $machineTsfProbeExit"
+            $global:LASTEXITCODE = 0
+          } else {
+            Write-Warning 'Machine registration control could not be installed on this runner.'
+          }
 
           if (Test-Path "$env:TEMP\weasel-register.log") {
             Write-Host 'Registration trace:'
