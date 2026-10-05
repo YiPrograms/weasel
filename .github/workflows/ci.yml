@@ -265,22 +265,30 @@ jobs:
             if (FAILED(hr))
               return 2;
 
-            ITfInputProcessorProfiles* profiles = nullptr;
+            ITfInputProcessorProfileMgr* profiles = nullptr;
             hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
                                   CLSCTX_INPROC_SERVER,
-                                  IID_ITfInputProcessorProfiles,
+                                  IID_ITfInputProcessorProfileMgr,
                                   reinterpret_cast<void**>(&profiles));
             if (FAILED(hr)) {
-              std::printf("CoCreateInstance failed: 0x%08X\n",
+              std::printf("CoCreateInstance(ProfileMgr) failed: 0x%08X\n",
                            static_cast<unsigned>(hr));
               CoUninitialize();
               return 3;
             }
 
-            IEnumTfLanguageProfiles* enumerator = nullptr;
-            hr = profiles->EnumLanguageProfiles(0x0404, &enumerator);
+            TF_INPUTPROCESSORPROFILE direct = {};
+            const HRESULT get_hr = profiles->GetProfile(
+                TF_PROFILETYPE_INPUTPROCESSOR, 0x0404, weasel, profile, nullptr,
+                &direct);
+            std::printf("ProfileMgr GetProfile hr=0x%08X flags=0x%08X\n",
+                         static_cast<unsigned>(get_hr),
+                         SUCCEEDED(get_hr) ? direct.dwFlags : 0);
+
+            IEnumTfInputProcessorProfiles* enumerator = nullptr;
+            hr = profiles->EnumProfiles(0x0404, &enumerator);
             if (FAILED(hr)) {
-              std::printf("EnumLanguageProfiles failed: 0x%08X\n",
+              std::printf("ProfileMgr EnumProfiles failed: 0x%08X\n",
                            static_cast<unsigned>(hr));
               profiles->Release();
               CoUninitialize();
@@ -288,22 +296,27 @@ jobs:
             }
 
             bool found = false;
-            TF_LANGUAGEPROFILE item = {};
+            unsigned count = 0;
+            TF_INPUTPROCESSORPROFILE item = {};
             ULONG fetched = 0;
             while (enumerator->Next(1, &item, &fetched) == S_OK) {
-              if (IsEqualGUID(item.clsid, weasel) &&
+              ++count;
+              if (item.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR &&
+                  IsEqualGUID(item.clsid, weasel) &&
                   IsEqualGUID(item.guidProfile, profile)) {
                 found = true;
-                std::printf("Weasel TSF profile enumerated: active=%d langid=0x%04X\n",
-                             item.fActive, item.langid);
+                std::printf(
+                    "Weasel ProfileMgr profile enumerated: flags=0x%08X langid=0x%04X\n",
+                    item.dwFlags, item.langid);
               }
             }
 
+            std::printf("ProfileMgr profiles enumerated: %u\n", count);
             enumerator->Release();
             profiles->Release();
             CoUninitialize();
 
-            std::printf("Weasel TSF profile found: %s\n",
+            std::printf("Weasel ProfileMgr profile found: %s\n",
                          found ? "true" : "false");
             return found ? 0 : 10;
           }
