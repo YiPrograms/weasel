@@ -212,7 +212,7 @@ jobs:
           $probeOut = Join-Path $env:TEMP 'weasel-unsigned-language-list.txt'
           $probeErr = Join-Path $env:TEMP 'weasel-unsigned-language-list.err.txt'
           Remove-Item $probeOut, $probeErr -Force -ErrorAction SilentlyContinue
-          $probeCommand = 'Get-WinUserLanguageList | Format-List *'
+          $probeCommand = 'Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }'
           $encodedProbe = [Convert]::ToBase64String(
             [Text.Encoding]::Unicode.GetBytes($probeCommand)
           )
@@ -239,13 +239,84 @@ jobs:
             Get-Content $probeErr
           }
 
-          $unsignedListed = $probeText -like "*$tipName*"
+          $unsignedListed = ($probeText -split "`r?`n") -contains $tipName
           $tipStillPresent = Test-Path $tipPath
           $profileAfter = Get-ItemProperty -Path $userProfilePath -ErrorAction SilentlyContinue
           $userProfileStillPresent = $null -ne $profileAfter -and $null -ne $profileAfter.$tipName
           Write-Host "Unsigned language list contains Weasel: $unsignedListed"
           Write-Host "Unsigned TIP after language-list probe: $tipStillPresent"
           Write-Host "Unsigned User Profile after language-list probe: $userProfileStillPresent"
+
+          Write-Host 'phase=unsigned-tsf-api-probe'
+          $probeSource = Join-Path $env:TEMP 'weasel-tsf-probe.cpp'
+          $probeExe = Join-Path $env:TEMP 'weasel-tsf-probe.exe'
+          @'
+          #include <windows.h>
+          #include <msctf.h>
+          #include <cstdio>
+
+          int wmain() {
+            const CLSID weasel = {0xA3F4CDED, 0xB1E9, 0x41EE,
+                                  {0x9C, 0xA6, 0x7B, 0x4D, 0x0D, 0xE6, 0xCB, 0x0A}};
+            const GUID profile = {0x3D02CAB6, 0x2B8E, 0x4781,
+                                  {0xBA, 0x20, 0x1C, 0x92, 0x67, 0x52, 0x94, 0x67}};
+
+            HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            if (FAILED(hr))
+              return 2;
+
+            ITfInputProcessorProfiles* profiles = nullptr;
+            hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+                                  CLSCTX_INPROC_SERVER,
+                                  IID_ITfInputProcessorProfiles,
+                                  reinterpret_cast<void**>(&profiles));
+            if (FAILED(hr)) {
+              std::wprintf(L"CoCreateInstance failed: 0x%08X\n",
+                           static_cast<unsigned>(hr));
+              CoUninitialize();
+              return 3;
+            }
+
+            IEnumTfLanguageProfiles* enumerator = nullptr;
+            hr = profiles->EnumLanguageProfiles(0x0404, &enumerator);
+            if (FAILED(hr)) {
+              std::wprintf(L"EnumLanguageProfiles failed: 0x%08X\n",
+                           static_cast<unsigned>(hr));
+              profiles->Release();
+              CoUninitialize();
+              return 4;
+            }
+
+            bool found = false;
+            TF_LANGUAGEPROFILE item = {};
+            ULONG fetched = 0;
+            while (enumerator->Next(1, &item, &fetched) == S_OK) {
+              if (IsEqualGUID(item.clsid, weasel) &&
+                  IsEqualGUID(item.guidProfile, profile)) {
+                found = true;
+                std::wprintf(L"Weasel TSF profile enumerated: active=%d langid=0x%04X\n",
+                             item.fActive, item.langid);
+              }
+            }
+
+            enumerator->Release();
+            profiles->Release();
+            CoUninitialize();
+
+            std::wprintf(L"Weasel TSF profile found: %s\n",
+                         found ? L"true" : L"false");
+            return found ? 0 : 10;
+          }
+          '@ | Set-Content -Path $probeSource -Encoding ascii
+
+          & cl.exe /nologo /EHsc $probeSource /link ole32.lib /out:$probeExe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to compile TSF probe: $LASTEXITCODE"
+          }
+
+          & $probeExe
+          $unsignedTsfProbeExit = $LASTEXITCODE
+          Write-Host "Unsigned TSF API probe exit code: $unsignedTsfProbeExit"
 
           if (Test-Path "$env:TEMP\weasel-register.log") {
             Write-Host 'Unsigned registration trace:'
@@ -392,7 +463,7 @@ jobs:
           $probeOut = Join-Path $env:TEMP 'weasel-language-list.txt'
           $probeErr = Join-Path $env:TEMP 'weasel-language-list.err.txt'
           $probeCommand = @"
-          Get-WinUserLanguageList | Format-List *
+          Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }
           "@
           $encodedProbe = [Convert]::ToBase64String(
             [Text.Encoding]::Unicode.GetBytes($probeCommand)
@@ -422,6 +493,11 @@ jobs:
           $userProfileStillPresent = $null -ne $profileAfter.$tipName
           Write-Host "TIP after language-list probe: $tipStillPresent"
           Write-Host "User Profile entry after language-list probe: $userProfileStillPresent"
+
+          Write-Host 'phase=signed-tsf-api-probe'
+          & $probeExe
+          $signedTsfProbeExit = $LASTEXITCODE
+          Write-Host "Signed TSF API probe exit code: $signedTsfProbeExit"
 
           if (Test-Path "$env:TEMP\weasel-register.log") {
             Write-Host 'Registration trace:'
