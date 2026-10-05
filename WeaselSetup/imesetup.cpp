@@ -192,6 +192,64 @@ static std::wstring profile_to_title(const std::wstring& profile) {
   return std::wstring(langidText) + L":" + clsidTextService + profileGuid;
 }
 
+static std::wstring profile_to_language_tag(const std::wstring& profile) {
+  if (profile == L"hant")
+    return L"zh-Hant-TW";
+  if (profile == L"hongkong")
+    return L"zh-Hant-HK";
+  if (profile == L"macau")
+    return L"zh-Hant-MO";
+  if (profile == L"singapore")
+    return L"zh-Hans-SG";
+  return L"zh-Hans-CN";
+}
+
+static bool update_user_input_method(const std::wstring& profile, bool add) {
+  const std::wstring tip = profile_to_title(profile);
+  if (tip.empty())
+    return false;
+
+  WCHAR lang_id[5] = {};
+  if (FAILED(StringCchPrintfW(lang_id, _countof(lang_id), L"%04X",
+                              profile_to_lang_id(profile))))
+    return false;
+
+  std::wstring command = L"-NoProfile -NonInteractive -Command \"";
+  command += L"$l=Get-WinUserLanguageList;$t='" + tip + L"';";
+  if (add) {
+    command += L"$z=$l|Where-Object {$_.InputMethodTips -match '^";
+    command += lang_id;
+    command += L":'}|Select-Object -First 1;";
+    command += L"if(!$z){$l.Add('" + profile_to_language_tag(profile) +
+               L"');$z=$l|Where-Object LanguageTag -eq '" +
+               profile_to_language_tag(profile) + L"'};";
+    command +=
+        L"if($z.InputMethodTips -notcontains $t){"
+        L"[void]$z.InputMethodTips.Add($t)};";
+  } else {
+    command += L"foreach($z in $l){[void]$z.InputMethodTips.Remove($t)};";
+  }
+  command += L"Set-WinUserLanguageList -LanguageList $l -Force\"";
+
+  SHELLEXECUTEINFOW info = {0};
+  info.cbSize = sizeof(info);
+  info.fMask = SEE_MASK_NOCLOSEPROCESS;
+  info.lpVerb = L"open";
+  info.lpFile = L"powershell.exe";
+  info.lpParameters = command.c_str();
+  info.nShow = SW_HIDE;
+
+  if (!ShellExecuteExW(&info))
+    return false;
+
+  WaitForSingleObject(info.hProcess, INFINITE);
+  DWORD exit_code = 1;
+  GetExitCodeProcess(info.hProcess, &exit_code);
+  CloseHandle(info.hProcess);
+  TraceRegistration(L"Set-WinUserLanguageList add=%d exit=%lu", add, exit_code);
+  return exit_code == 0;
+}
+
 int install_ime_file(std::wstring& srcPath,
                      const std::wstring& ext,
                      const std::wstring& profile,
@@ -469,7 +527,7 @@ int register_text_service(const std::wstring& tsf_path,
   using RegisterServerFunction = HRESULT(STDAPICALLTYPE*)();
   const bool per_user = is_per_user_registration();
 
-  if (!register_ime)
+  if (!register_ime && !per_user)
     enable_profile(FALSE, profile, per_user);
 
   std::wstring params;
@@ -622,6 +680,9 @@ int install(const std::wstring& profile, bool silent, bool per_user) {
   if (retval)
     return 1;
 
+  if (per_user && !update_user_input_method(profile, true))
+    return 1;
+
   MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_INSTALL_SUCCESS_INFO,
                         IDS_STR_INSTALL_SUCCESS_CAP,
                         MB_ICONINFORMATION | MB_OK);
@@ -652,28 +713,20 @@ int uninstall(bool silent, bool per_user) {
       }
     }
 
-    HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
-    if (hInputDLL) {
-      std::wstring title = profile_to_title(profile);
-      if (!title.empty()) {
-        if (per_user) {
-          auto pfnInstallLayoutOrTipUserReg =
-              (PTF_INSTALLLAYOUTORTIPUSERREG)GetProcAddress(
-                  hInputDLL, "InstallLayoutOrTipUserReg");
-          if (pfnInstallLayoutOrTipUserReg &&
-              override_machine_registry_for_current_user(true)) {
-            (*pfnInstallLayoutOrTipUserReg)(NULL, NULL, NULL, title.c_str(),
-                                            ILOT_UNINSTALL);
-            override_machine_registry_for_current_user(false);
-          }
-        } else {
+    if (per_user) {
+      update_user_input_method(profile, false);
+    } else {
+      HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
+      if (hInputDLL) {
+        std::wstring title = profile_to_title(profile);
+        if (!title.empty()) {
           auto pfnInstallLayoutOrTip = (PTF_INSTALLLAYOUTORTIP)GetProcAddress(
               hInputDLL, "InstallLayoutOrTip");
           if (pfnInstallLayoutOrTip)
             (*pfnInstallLayoutOrTip)(title.c_str(), ILOT_UNINSTALL);
         }
+        FreeLibrary(hInputDLL);
       }
-      FreeLibrary(hInputDLL);
     }
     RegCloseKey(hKey);
   }
