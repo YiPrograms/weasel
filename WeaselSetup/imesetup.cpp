@@ -192,62 +192,133 @@ static std::wstring profile_to_title(const std::wstring& profile) {
   return std::wstring(langidText) + L":" + clsidTextService + profileGuid;
 }
 
-static std::wstring profile_to_language_tag(const std::wstring& profile) {
-  if (profile == L"hant")
-    return L"zh-Hant-TW";
-  if (profile == L"hongkong")
-    return L"zh-Hant-HK";
-  if (profile == L"macau")
-    return L"zh-Hant-MO";
-  if (profile == L"singapore")
-    return L"zh-Hans-SG";
-  return L"zh-Hans-CN";
+static bool read_reg_string(HKEY key, const WCHAR* name, std::wstring& value) {
+  DWORD type = 0;
+  DWORD bytes = 0;
+  if (RegQueryValueExW(key, name, NULL, &type, NULL, &bytes) != ERROR_SUCCESS ||
+      type != REG_SZ || bytes < sizeof(WCHAR))
+    return false;
+
+  std::vector<WCHAR> buffer(bytes / sizeof(WCHAR) + 1, L'\0');
+  if (RegQueryValueExW(key, name, NULL, &type,
+                       reinterpret_cast<LPBYTE>(buffer.data()),
+                       &bytes) != ERROR_SUCCESS)
+    return false;
+
+  value.assign(buffer.data());
+  return true;
+}
+
+static bool write_reg_string(HKEY key,
+                             const WCHAR* name,
+                             const std::wstring& value) {
+  return RegSetValueExW(
+             key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
+             static_cast<DWORD>((value.size() + 1) * sizeof(WCHAR))) ==
+         ERROR_SUCCESS;
 }
 
 static bool update_user_input_method(const std::wstring& profile, bool add) {
-  const std::wstring tip = profile_to_title(profile);
-  if (tip.empty())
-    return false;
+  WCHAR clsid[64] = {};
+  WCHAR profile_guid[64] = {};
+  WCHAR category_guid[64] = {};
+  WCHAR lang_id[16] = {};
 
-  WCHAR lang_id[5] = {};
-  if (FAILED(StringCchPrintfW(lang_id, _countof(lang_id), L"%04X",
-                              profile_to_lang_id(profile))))
+  if (StringFromGUID2(c_clsidTextService, clsid, _countof(clsid)) <= 0 ||
+      StringFromGUID2(c_guidProfile, profile_guid, _countof(profile_guid)) <=
+          0 ||
+      StringFromGUID2(GUID_TFCAT_TIP_KEYBOARD, category_guid,
+                      _countof(category_guid)) <= 0 ||
+      FAILED(StringCchPrintfW(lang_id, _countof(lang_id), L"0x%08X",
+                              profile_to_lang_id(profile)))) {
     return false;
-
-  std::wstring command = L"-NoProfile -NonInteractive -Command \"";
-  command += L"$l=Get-WinUserLanguageList;$t='" + tip + L"';";
-  if (add) {
-    command += L"$z=$l|Where-Object {$_.InputMethodTips -match '^";
-    command += lang_id;
-    command += L":'}|Select-Object -First 1;";
-    command += L"if(!$z){$l.Add('" + profile_to_language_tag(profile) +
-               L"');$z=$l|Where-Object LanguageTag -eq '" +
-               profile_to_language_tag(profile) + L"'};";
-    command +=
-        L"if($z.InputMethodTips -notcontains $t){"
-        L"[void]$z.InputMethodTips.Add($t)};";
-  } else {
-    command += L"foreach($z in $l){[void]$z.InputMethodTips.Remove($t)};";
   }
-  command += L"Set-WinUserLanguageList -LanguageList $l -Force\"";
 
-  SHELLEXECUTEINFOW info = {0};
-  info.cbSize = sizeof(info);
-  info.fMask = SEE_MASK_NOCLOSEPROCESS;
-  info.lpVerb = L"open";
-  info.lpFile = L"powershell.exe";
-  info.lpParameters = command.c_str();
-  info.nShow = SW_HIDE;
+  const std::wstring base =
+      L"Software\\Microsoft\\CTF\\SortOrder\\AssemblyItem\\" +
+      std::wstring(lang_id) + L"\\" + category_guid;
 
-  if (!ShellExecuteExW(&info))
+  HKEY base_key = NULL;
+  DWORD disposition = 0;
+  LSTATUS status = RegCreateKeyExW(
+      HKEY_CURRENT_USER, base.c_str(), 0, NULL, REG_OPTION_NON_VOLATILE,
+      KEY_READ | KEY_WRITE, NULL, &base_key, &disposition);
+  TraceRegistration(L"SortOrder base status=%ld path=%s", status, base.c_str());
+  if (status != ERROR_SUCCESS)
     return false;
 
-  WaitForSingleObject(info.hProcess, INFINITE);
-  DWORD exit_code = 1;
-  GetExitCodeProcess(info.hProcess, &exit_code);
-  CloseHandle(info.hProcess);
-  TraceRegistration(L"Set-WinUserLanguageList add=%d exit=%lu", add, exit_code);
-  return exit_code == 0;
+  std::vector<std::wstring> matching_slots;
+  DWORD first_free = 0xFFFFFFFF;
+  for (DWORD slot = 0; slot < 256; ++slot) {
+    WCHAR slot_name[16] = {};
+    StringCchPrintfW(slot_name, _countof(slot_name), L"%08X", slot);
+
+    HKEY slot_key = NULL;
+    status = RegOpenKeyExW(base_key, slot_name, 0, KEY_READ, &slot_key);
+    if (status == ERROR_FILE_NOT_FOUND) {
+      if (first_free == 0xFFFFFFFF)
+        first_free = slot;
+      continue;
+    }
+    if (status != ERROR_SUCCESS)
+      continue;
+
+    std::wstring existing_clsid;
+    std::wstring existing_profile;
+    const bool matches =
+        read_reg_string(slot_key, L"CLSID", existing_clsid) &&
+        read_reg_string(slot_key, L"Profile", existing_profile) &&
+        _wcsicmp(existing_clsid.c_str(), clsid) == 0 &&
+        _wcsicmp(existing_profile.c_str(), profile_guid) == 0;
+    RegCloseKey(slot_key);
+
+    if (matches)
+      matching_slots.emplace_back(slot_name);
+  }
+
+  if (!add) {
+    bool ok = true;
+    for (const auto& slot : matching_slots) {
+      status = RegDeleteTreeW(base_key, slot.c_str());
+      TraceRegistration(L"SortOrder remove slot=%s status=%ld", slot.c_str(),
+                        status);
+      if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND)
+        ok = false;
+    }
+    RegCloseKey(base_key);
+    return ok;
+  }
+
+  if (!matching_slots.empty()) {
+    TraceRegistration(L"SortOrder already present slot=%s",
+                      matching_slots.front().c_str());
+    RegCloseKey(base_key);
+    return true;
+  }
+
+  if (first_free == 0xFFFFFFFF) {
+    RegCloseKey(base_key);
+    return false;
+  }
+
+  WCHAR slot_name[16] = {};
+  StringCchPrintfW(slot_name, _countof(slot_name), L"%08X", first_free);
+  HKEY slot_key = NULL;
+  status =
+      RegCreateKeyExW(base_key, slot_name, 0, NULL, REG_OPTION_NON_VOLATILE,
+                      KEY_WRITE, NULL, &slot_key, &disposition);
+  if (status != ERROR_SUCCESS) {
+    RegCloseKey(base_key);
+    return false;
+  }
+
+  const bool ok = write_reg_string(slot_key, L"CLSID", clsid) &&
+                  write_reg_string(slot_key, L"Profile", profile_guid) &&
+                  write_reg_string(slot_key, L"KeyboardLayout", L"0");
+  TraceRegistration(L"SortOrder add slot=%s success=%d", slot_name, ok);
+  RegCloseKey(slot_key);
+  RegCloseKey(base_key);
+  return ok;
 }
 
 int install_ime_file(std::wstring& srcPath,
