@@ -115,6 +115,12 @@ typedef int (*ime_register_func)(const std::wstring& ime_path,
                                  const std::wstring& profile,
                                  bool silent);
 
+static bool is_per_user_registration() {
+  WCHAR value[2];
+  return GetEnvironmentVariableW(L"WEASEL_PER_USER", value, _countof(value)) >
+         0;
+}
+
 static LANGID profile_to_lang_id(const std::wstring& profile) {
   if (profile == L"hant")
     return MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL);
@@ -377,7 +383,14 @@ int uninstall_ime_file(const std::wstring& ext,
 // 注册IME输入法
 // `register_ime` (IMM/.ime) support removed — TSF-only build
 
-void enable_profile(BOOL fEnable, const std::wstring& profile) {
+void enable_profile(BOOL fEnable,
+                    const std::wstring& profile,
+                    bool per_user = false) {
+  if (per_user && RegOverridePredefKey(HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER) !=
+                      ERROR_SUCCESS) {
+    return;
+  }
+
   HRESULT hr;
   ITfInputProcessorProfiles* pProfiles = NULL;
 
@@ -399,6 +412,9 @@ void enable_profile(BOOL fEnable, const std::wstring& profile) {
 
     pProfiles->Release();
   }
+
+  if (per_user)
+    RegOverridePredefKey(HKEY_LOCAL_MACHINE, NULL);
 }
 
 // 注册TSF输入法
@@ -409,9 +425,10 @@ int register_text_service(const std::wstring& tsf_path,
                           const std::wstring& profile,
                           bool silent) {
   using RegisterServerFunction = HRESULT(STDAPICALLTYPE*)();
+  const bool per_user = is_per_user_registration();
 
   if (!register_ime)
-    enable_profile(FALSE, profile);
+    enable_profile(FALSE, profile, per_user);
 
   std::wstring params = L" \"" + tsf_path + L"\"";
   if (!register_ime) {
@@ -444,7 +461,11 @@ int register_text_service(const std::wstring& tsf_path,
   shExInfo.hInstApp = 0;
   if (ShellExecuteExW(&shExInfo)) {
     WaitForSingleObject(shExInfo.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(shExInfo.hProcess, &exit_code);
     CloseHandle(shExInfo.hProcess);
+    if (exit_code != 0)
+      return 1;
   } else {
     WCHAR msg[100];
     CString str;
@@ -456,7 +477,7 @@ int register_text_service(const std::wstring& tsf_path,
   }
 
   if (register_ime)
-    enable_profile(TRUE, profile);
+    enable_profile(TRUE, profile, per_user);
 
   return 0;
 }
@@ -519,8 +540,12 @@ int install(const std::wstring& profile, bool silent, bool per_user) {
         auto pfnInstallLayoutOrTipUserReg =
             (PTF_INSTALLLAYOUTORTIPUSERREG)GetProcAddress(
                 hInputDLL, "InstallLayoutOrTipUserReg");
-        if (pfnInstallLayoutOrTipUserReg)
+        if (pfnInstallLayoutOrTipUserReg &&
+            RegOverridePredefKey(HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER) ==
+                ERROR_SUCCESS) {
           (*pfnInstallLayoutOrTipUserReg)(NULL, NULL, NULL, title.c_str(), 0);
+          RegOverridePredefKey(HKEY_LOCAL_MACHINE, NULL);
+        }
       } else {
         auto pfnInstallLayoutOrTip = (PTF_INSTALLLAYOUTORTIP)GetProcAddress(
             hInputDLL, "InstallLayoutOrTip");
@@ -585,9 +610,13 @@ int uninstall(bool silent, bool per_user) {
           auto pfnInstallLayoutOrTipUserReg =
               (PTF_INSTALLLAYOUTORTIPUSERREG)GetProcAddress(
                   hInputDLL, "InstallLayoutOrTipUserReg");
-          if (pfnInstallLayoutOrTipUserReg)
+          if (pfnInstallLayoutOrTipUserReg &&
+              RegOverridePredefKey(HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER) ==
+                  ERROR_SUCCESS) {
             (*pfnInstallLayoutOrTipUserReg)(NULL, NULL, NULL, title.c_str(),
                                             ILOT_UNINSTALL);
+            RegOverridePredefKey(HKEY_LOCAL_MACHINE, NULL);
+          }
         } else {
           auto pfnInstallLayoutOrTip = (PTF_INSTALLLAYOUTORTIP)GetProcAddress(
               hInputDLL, "InstallLayoutOrTip");

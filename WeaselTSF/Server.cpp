@@ -74,6 +74,18 @@ STDMETHODIMP CClassFactory::LockServer(BOOL fLock) {
 
 static CClassFactory* g_classFactory = NULL;
 
+static bool IsPerUserRegistration() {
+  WCHAR value[2];
+  return GetEnvironmentVariableW(L"WEASEL_PER_USER", value, _countof(value)) >
+         0;
+}
+
+static HRESULT OverrideMachineRegistryForCurrentUser(bool enable) {
+  const LSTATUS result = RegOverridePredefKey(
+      HKEY_LOCAL_MACHINE, enable ? HKEY_CURRENT_USER : NULL);
+  return HRESULT_FROM_WIN32(result);
+}
+
 static void BuildGlobalObjects() {
   g_classFactory = new CClassFactory();
 }
@@ -101,7 +113,23 @@ STDAPI DllCanUnloadNow() {
 }
 
 STDAPI DllRegisterServer() {
-  if (!RegisterServer() || !RegisterProfiles() || !RegisterCategories()) {
+  if (!RegisterServer())
+    return E_FAIL;
+
+  const bool per_user = IsPerUserRegistration();
+  if (per_user) {
+    const HRESULT hr = OverrideMachineRegistryForCurrentUser(true);
+    if (FAILED(hr)) {
+      UnregisterServer();
+      return hr;
+    }
+  }
+
+  const bool registered = RegisterProfiles() && RegisterCategories();
+  if (per_user)
+    OverrideMachineRegistryForCurrentUser(false);
+
+  if (!registered) {
     DllUnregisterServer();
     return E_FAIL;
   }
@@ -109,8 +137,19 @@ STDAPI DllRegisterServer() {
 }
 
 STDAPI DllUnregisterServer() {
+  const bool per_user = IsPerUserRegistration();
+  if (per_user) {
+    const HRESULT hr = OverrideMachineRegistryForCurrentUser(true);
+    if (FAILED(hr))
+      return hr;
+  }
+
   UnregisterProfiles();
   UnregisterCategories();
+
+  if (per_user)
+    OverrideMachineRegistryForCurrentUser(false);
+
   UnregisterServer();
   return S_OK;
 }
