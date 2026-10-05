@@ -516,10 +516,30 @@ jobs:
           if ($machineRegisterExit -eq 0) {
             & $probeExe
             $machineTsfProbeExit = $LASTEXITCODE
-            Write-Host "Machine TSF API probe exit code: $machineTsfProbeExit"
+            Write-Host "Machine regsvr32-only TSF API probe exit code: $machineTsfProbeExit"
             $global:LASTEXITCODE = 0
           } else {
-            Write-Warning 'Machine registration control could not be installed on this runner.'
+            Write-Warning 'Machine regsvr32 control could not be installed on this runner.'
+          }
+
+          Write-Host 'phase=full-machine-install-control'
+          $machineSetup = Start-Process `
+            -FilePath '.\output\WeaselSetup.exe' `
+            -ArgumentList @('/t') `
+            -PassThru
+          if (-not $machineSetup.WaitForExit(90000)) {
+            Stop-Process -Id $machineSetup.Id -Force -ErrorAction SilentlyContinue
+            throw 'Full machine WeaselSetup /t timed out.'
+          }
+          Write-Host "Full machine WeaselSetup exit code: $($machineSetup.ExitCode)"
+
+          if ($machineSetup.ExitCode -eq 0) {
+            & $probeExe
+            $fullMachineTsfProbeExit = $LASTEXITCODE
+            Write-Host "Full machine TSF API probe exit code: $fullMachineTsfProbeExit"
+            $global:LASTEXITCODE = 0
+          } else {
+            Write-Warning 'Full machine install control failed.'
           }
 
           if (Test-Path "$env:TEMP\weasel-register.log") {
