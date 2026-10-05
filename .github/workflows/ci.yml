@@ -217,8 +217,7 @@ jobs:
           }
 
           Write-Host 'phase=sign-tsf-dlls'
-          $signtool = Get-ChildItem \
-            "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
             Sort-Object FullName |
             Select-Object -Last 1 -ExpandProperty FullName
           if (-not $signtool) {
@@ -283,11 +282,14 @@ jobs:
           $probeCommand = @"
           Get-WinUserLanguageList | Format-List * | Out-File -Encoding utf8 '$probeOut'
           "@
-          $probe = Start-Process \
-            -FilePath 'powershell.exe' \
-            -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', $probeCommand) \
-            -RedirectStandardOutput $probeOut \
-            -RedirectStandardError $probeErr \
+          $encodedProbe = [Convert]::ToBase64String(
+            [Text.Encoding]::Unicode.GetBytes($probeCommand)
+          )
+          $probe = Start-Process `
+            -FilePath 'powershell.exe' `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedProbe) `
+            -RedirectStandardOutput $probeOut `
+            -RedirectStandardError $probeErr `
             -PassThru
           if (-not $probe.WaitForExit(20000)) {
             Write-Warning 'Get-WinUserLanguageList timed out on the hosted runner.'
