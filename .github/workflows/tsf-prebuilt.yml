@@ -184,6 +184,52 @@ jobs:
             RegCloseKey(key);
           }
 
+          static void probe_user_activation(ITfInputProcessorProfileMgr* mgr) {
+            ITfInputProcessorProfiles* profiles = nullptr;
+            HRESULT create_profiles = CoCreateInstance(
+                CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER,
+                IID_ITfInputProcessorProfiles,
+                reinterpret_cast<void**>(&profiles));
+            std::printf("Activation ITfInputProcessorProfiles CoCreate HRESULT: 0x%08X\n",
+                        static_cast<unsigned>(create_profiles));
+            if (SUCCEEDED(create_profiles)) {
+              HRESULT enable = profiles->EnableLanguageProfile(
+                  kWeaselClsid, 0x0404, kWeaselProfile, TRUE);
+              std::printf("EnableLanguageProfile HRESULT: 0x%08X\n",
+                          static_cast<unsigned>(enable));
+              HRESULT enable_default = profiles->EnableLanguageProfileByDefault(
+                  kWeaselClsid, 0x0404, kWeaselProfile, TRUE);
+              std::printf("EnableLanguageProfileByDefault HRESULT: 0x%08X\n",
+                          static_cast<unsigned>(enable_default));
+              profiles->Release();
+            }
+
+            std::puts("=== ProfileMgr after EnableLanguageProfile ===");
+            dump_profiles(mgr);
+
+            HMODULE input = LoadLibraryW(L"input.dll");
+            std::printf("LoadLibrary(input.dll): %s\n", input ? "ok" : "failed");
+            if (input) {
+              using InstallLayoutOrTipFn = BOOL(WINAPI*)(LPCWSTR, DWORD);
+              auto install_layout_or_tip = reinterpret_cast<InstallLayoutOrTipFn>(
+                  GetProcAddress(input, "InstallLayoutOrTip"));
+              std::printf("GetProcAddress(InstallLayoutOrTip): %s\n",
+                          install_layout_or_tip ? "ok" : "failed");
+              if (install_layout_or_tip) {
+                const WCHAR tip[] =
+                    L"0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}";
+                BOOL installed = install_layout_or_tip(tip, 0);
+                std::printf("InstallLayoutOrTip result: %d last_error=%lu\n",
+                            installed ? 1 : 0,
+                            static_cast<unsigned long>(GetLastError()));
+              }
+              FreeLibrary(input);
+            }
+
+            std::puts("=== ProfileMgr after InstallLayoutOrTip ===");
+            dump_profiles(mgr);
+          }
+
           int wmain(int argc, wchar_t** argv) {
             HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
             if (FAILED(hr))
@@ -205,8 +251,10 @@ jobs:
                 argc > 1 && std::wcscmp(argv[1], L"register") == 0;
             const bool inspect_mode =
                 argc > 1 && std::wcscmp(argv[1], L"inspect") == 0;
+            const bool activate_mode =
+                argc > 1 && std::wcscmp(argv[1], L"activate") == 0;
 
-            if (inspect_mode) {
+            if (inspect_mode || activate_mode) {
               print_identity();
               std::puts("=== User install state ===");
               print_user_install_state();
@@ -214,6 +262,9 @@ jobs:
               print_registration_keys();
               std::puts("=== ProfileMgr in current user ===");
             }
+
+            if (activate_mode)
+              probe_user_activation(mgr);
 
             if (register_mode) {
               print_identity();
@@ -355,6 +406,35 @@ jobs:
             if ((Test-Path $inspectErr) -and (Get-Item $inspectErr).Length -gt 0) {
               Write-Host '=== Standard-user inspect stderr ==='
               Get-Content $inspectErr
+            }
+
+            $activateOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-activation.out'
+            $activateErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-activation.err'
+            $activateProcess = Start-Process -FilePath $probe -ArgumentList 'activate' `
+              -Credential $credential -LoadUserProfile -Environment $childEnvironment -Wait -PassThru `
+              -RedirectStandardOutput $activateOut -RedirectStandardError $activateErr
+            Write-Host "Standard-user activation probe exit code: $($activateProcess.ExitCode)"
+            Write-Host '=== Standard-user activation APIs after per-user install ==='
+            Get-Content $activateOut
+            if ((Test-Path $activateErr) -and (Get-Item $activateErr).Length -gt 0) {
+              Write-Host '=== Standard-user activation stderr ==='
+              Get-Content $activateErr
+            }
+
+            $languageOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-language-list.out'
+            $languageErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-language-list.err'
+            $languageCommand = 'Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }'
+            $encodedLanguageCommand = [Convert]::ToBase64String(
+              [Text.Encoding]::Unicode.GetBytes($languageCommand))
+            $languageProcess = Start-Process -FilePath 'powershell.exe' `
+              -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encodedLanguageCommand) `
+              -Credential $credential -LoadUserProfile -Environment $childEnvironment -Wait -PassThru `
+              -RedirectStandardOutput $languageOut -RedirectStandardError $languageErr
+            Write-Host '=== Standard-user Get-WinUserLanguageList after activation APIs ==='
+            Get-Content $languageOut
+            if ((Test-Path $languageErr) -and (Get-Item $languageErr).Length -gt 0) {
+              Write-Host '=== Standard-user language-list stderr ==='
+              Get-Content $languageErr
             }
           }
           finally {
