@@ -142,6 +142,23 @@ jobs:
           Write-Host '=== ProfileMgr before machine install ==='
           & "$env:TEMP\weasel-profile-probe.exe"
 
+
+      - name: Patch HKCU profile metadata to match machine registration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}\LanguageProfile'
+          Get-ChildItem $base | ForEach-Object {
+            Get-ChildItem $_.PSPath | ForEach-Object {
+              New-ItemProperty -Path $_.PSPath -Name HiddenInSettingUI -PropertyType DWord -Value 0 -Force | Out-Null
+              New-ItemProperty -Path $_.PSPath -Name SubItemInSettingUI -PropertyType DWord -Value 0 -Force | Out-Null
+            }
+          }
+
+          Write-Host '=== ProfileMgr after adding HiddenInSettingUI/SubItemInSettingUI ==='
+          & "$env:TEMP\weasel-profile-probe.exe"
+          $global:LASTEXITCODE = 0
+
       - name: Full machine-install control using prebuilt files
         shell: pwsh
         run: |
@@ -176,3 +193,7 @@ jobs:
 
           Write-Host '=== HKCU TIP after machine install ==='
           & reg.exe query 'HKCU\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}' /s /reg:64
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host 'HKCU TIP is absent after full machine install (expected/diagnostic).'
+          }
+          $global:LASTEXITCODE = 0
