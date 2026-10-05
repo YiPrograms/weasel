@@ -443,15 +443,21 @@ int register_text_service(const std::wstring& tsf_path,
   if (!register_ime)
     enable_profile(FALSE, profile, per_user);
 
-  std::wstring params = L" \"" + tsf_path + L"\"";
-  if (!register_ime) {
-    params = L" /u " + params;  // unregister
-  }
-  // if (silent)  // always silent
-  { params = L" /s " + params; }
+  std::wstring params;
+  if (per_user) {
+    params = L" /s /n ";
+    if (!register_ime)
+      params += L"/u ";
+    params += L"/i:user," + profile + L" \"" + tsf_path + L"\"";
+  } else {
+    params = L" \"" + tsf_path + L"\"";
+    if (!register_ime)
+      params = L" /u " + params;  // unregister
+    params = L" /s " + params;
 
-  if (!SetEnvironmentVariable(L"TEXTSERVICE_PROFILE", profile.c_str())) {
-    throw std::runtime_error("SetEnvironmentVariable failed");
+    if (!SetEnvironmentVariable(L"TEXTSERVICE_PROFILE", profile.c_str())) {
+      throw std::runtime_error("SetEnvironmentVariable failed");
+    }
   }
 
   std::wstring app = L"regsvr32.exe";

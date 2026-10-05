@@ -136,3 +136,40 @@ STDAPI DllUnregisterServer() {
   UnregisterServer();
   return S_OK;
 }
+
+STDAPI DllInstall(BOOL install, LPCWSTR command_line) {
+  if (!command_line)
+    return E_INVALIDARG;
+
+  const std::wstring command(command_line);
+  const std::wstring prefix = L"user";
+  if (command.compare(0, prefix.size(), prefix) != 0)
+    return E_INVALIDARG;
+
+  std::wstring profile;
+  if (command.size() > prefix.size() && command[prefix.size()] == L',')
+    profile = command.substr(prefix.size() + 1);
+
+  SetEnvironmentVariableW(L"WEASEL_PER_USER", L"1");
+  if (!profile.empty())
+    SetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", profile.c_str());
+
+  HRESULT result = S_OK;
+  if (install) {
+    if (!RegisterServer() || !RegisterProfilesForCurrentUser() ||
+        !RegisterCategoriesForCurrentUser()) {
+      UnregisterProfilesForCurrentUser();
+      UnregisterCategoriesForCurrentUser();
+      UnregisterServer();
+      result = E_FAIL;
+    }
+  } else {
+    UnregisterProfilesForCurrentUser();
+    UnregisterCategoriesForCurrentUser();
+    UnregisterServer();
+  }
+
+  SetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", NULL);
+  SetEnvironmentVariableW(L"WEASEL_PER_USER", NULL);
+  return result;
+}
