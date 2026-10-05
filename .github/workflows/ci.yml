@@ -1,281 +1,280 @@
-1	name: CI
-2	
-3	on:
-4	  push:
-5	    branches:
-6	      - '*'
-7	    tags:
-8	      - '[0-9]+.*'
-9	  pull_request:
-10	  workflow_dispatch:
-11	
-12	jobs:
-13	  lint:
-14	    runs-on: ubuntu-22.04
-15	    steps:
-16	      - name: Checkout last commit
-17	        uses: actions/checkout@v4
-18	
-19	      - name: Install clang-format 18
-20	        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-21	        run: |
-22	          wget https://apt.llvm.org/llvm-snapshot.gpg.key
-23	          sudo gpg --dearmor < llvm-snapshot.gpg.key > /usr/share/keyrings/llvm-archive-keyring.gpg
-24	          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm-toolchain-jammy-18.list
-25	          sudo apt-get update
-26	          sudo apt-get install -y clang-format-18
-27	          sudo ln -sf /usr/bin/clang-format-18 /usr/local/bin/clang-format
-28	          clang-format --version
-29	
-30	      - name: Code style lint
-31	        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-32	        shell: bash
-33	        run: ./clang-format.sh -i
-34	
-35	  build:
-36	    needs: lint
-37	    runs-on: windows-2022
-38	    env:
-39	      boost_version: 1.84.0
-40	      BOOST_ROOT: ${{ github.workspace }}\deps\boost_1_84_0
-41	      SDKVER: 10.0.19041.0
-42	    strategy:
-43	      matrix:
-44	        variant: [msbuild, xmake]
-45	    steps:
-46	      - name: Checkout last commit
-47	        uses: actions/checkout@v4
-48	        with:
-49	          submodules: true
-50	          fetch-depth: 0
-51	
-52	      - name: Fetch all tags
-53	        run: git fetch --tags
-54	
-55	      - name: Configure build environment
-56	        shell: bash
-57	        run: |
-58	          cp env.vs2022.bat env.bat
-59	          echo git_ref_name="$(git describe --always)" >> $GITHUB_ENV
-60	
-61	      - name: Cache Boost
-62	        id: cache-boost
-63	        uses: actions/cache@v4
-64	        with:
-65	          path: |
-66	            ${{ env.BOOST_ROOT }}
-67	          key: ${{ runner.os }}-boost-${{ env.boost_version }}
-68	
-69	      - name: Install Boost
-70	        if: steps.cache-boost.outputs.cache-hit != 'true'
-71	        shell: bash
-72	        run: |
-73	          ./install_boost.bat
-74	          ./build.bat boost arm64
-75	
-76	      - uses: ilammy/msvc-dev-cmd@v1
-77	        with:
-78	          sdk: ${{ env.SDKVER }}
-79	
-80	      # bundled winsparkle v0.9.2 to disable auto open ReleaseNoteUrl in default browser
-81	      - name: cache bundled winsparkle
-82	        id: cache-winsparkle
-83	        uses: actions/cache@v4
-84	        with:
-85	          path: |
-86	            ${{ github.workspace }}\winsparkle\x64\Release\WinSparkle.dll
-87	            ${{ github.workspace }}\winsparkle\x64\Release\WinSparkle.lib
-88	            ${{ github.workspace }}\winsparkle\Release\WinSparkle.dll
-89	            ${{ github.workspace }}\winsparkle\Release\WinSparkle.lib
-90	          key: ${{ runner.os }}-winsparkle-v0.9.2-bundled
-91	          restore-keys: |
-92	            winsparkle-v0.9.2-bundled
-93	
-94	      - name: Build bundled winsparkle
-95	        if: steps.cache-winsparkle.outputs.cache-hit != 'true'
-96	        shell: pwsh
-97	        run: |
-98	          $ErrorActionPreference = 'Stop'
-99	          if (Test-Path winsparkle) { Remove-Item -Recurse -Force winsparkle }
-100	          # Clone winsparkle repo v0.9.2
-101	          git clone https://github.com/vslavik/winsparkle.git -b v0.9.2 --depth 1
-102	          cd winsparkle
-103	          git submodule update --init --recursive
-104	          copy ..\bundled_winsparkle.patch .
-105	          git apply bundled_winsparkle.patch
-106	          nuget restore
-107	          msbuild -m -t:Build -p:Configuration=Release -p:Platform=x64 WinSparkle.sln
-108	          msbuild -m -t:Build -p:Configuration=Release -p:Platform=Win32 WinSparkle.sln
-109	
-110	      - name: Install WinSparkle files
-111	        shell: pwsh
-112	        run: |
-113	          $ErrorActionPreference = 'Stop'
-114	          copy .\winsparkle\x64\Release\WinSparkle.dll .\output\
-115	          copy .\winsparkle\x64\Release\WinSparkle.lib .\lib64\
-116	          copy .\winsparkle\Release\WinSparkle.dll .\output\Win32\
-117	          copy .\winsparkle\Release\WinSparkle.lib .\lib\
-118	
-119	      - name: Get Rime files
-120	        shell: pwsh
-121	        run: |
-122	          $ErrorActionPreference = 'Stop'
-123	          .\get-rime.ps1 -use dev
-124	
-125	      - name: Build data
-126	        shell: pwsh
-127	        run: |
-128	          $ErrorActionPreference = 'Stop'
-129	          .\build.bat data
-130	
-131	      - name: Setup xmake
-132	        if: matrix.variant == 'xmake'
-133	        uses: xmake-io/github-action-setup-xmake@v1
-134	
-135	      - name: Build Weasel
-136	        shell: pwsh
-137	        id: build_weasel
-138	        env:
-139	          RELEASE_BUILD: ${{ (github.repository == 'rime/weasel' && startsWith(github.ref, 'refs/tags/')) && '1' || '' }}
-140	        run: |
-141	          $ErrorActionPreference = 'Stop'
-142	          if ('${{ matrix.variant }}' -eq 'msbuild') {
-143	            .\build.bat arm64 installer
-144	          } else {
-145	            .\xbuild.bat arm64 installer
-146	          }
-147	
-148	      - name: Signed per-user TSF smoke test
-149	        if: matrix.variant == 'msbuild' && !startsWith(github.ref, 'refs/tags/')
-150	        shell: pwsh
-151	        run: |
-152	          $ErrorActionPreference = 'Stop'
-153	
-154	          # Match the zh-Hant-TW environment used by the per-user test case.
-155	          $languages = New-WinUserLanguageList 'zh-Hant-TW'
-156	          Set-WinUserLanguageList -LanguageList $languages -Force
-157	
-158	          # A temporary CurrentUser code-signing certificate keeps this test
-159	          # entirely non-admin while satisfying Windows' signed IME requirement.
-160	          $cert = New-SelfSignedCertificate `
-161	            -Type CodeSigningCert `
-162	            -Subject 'CN=Weasel CI Test IME' `
-163	            -CertStoreLocation 'Cert:\CurrentUser\My'
-164	          $cer = Join-Path $env:TEMP 'weasel-ci-test.cer'
-165	          Export-Certificate -Cert $cert -FilePath $cer | Out-Null
-166	          Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
-167	          Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\TrustedPublisher' | Out-Null
-168	
-169	          foreach ($dll in @('.\output\weasel.dll', '.\output\weaselx64.dll')) {
-170	            Unblock-File $dll
-171	            $signature = Set-AuthenticodeSignature $dll $cert -HashAlgorithm SHA256
-172	            if ($signature.Status -ne 'Valid') {
-173	              throw "Failed to sign $dll: $($signature.Status) $($signature.StatusMessage)"
-174	            }
-175	          }
-176	
-177	          Write-Host 'Authenticode status:'
-178	          Get-AuthenticodeSignature .\output\weasel.dll, .\output\weaselx64.dll |
-179	            Format-Table Path, Status, StatusMessage -AutoSize
-180	
-181	          # Remove stale test state and run the same current-user Traditional
-182	          # Chinese registration path as the per-user installer.
-183	          Remove-Item 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}' `
-184	            -Recurse -Force -ErrorAction SilentlyContinue
-185	          Remove-ItemProperty `
-186	            -Path 'HKCU:\Control Panel\International\User Profile\zh-Hant-TW' `
-187	            -Name '0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}' `
-188	            -ErrorAction SilentlyContinue
-189	
-190	          $setup = Start-Process `
-191	            -FilePath '.\output\WeaselSetup.exe' `
-192	            -ArgumentList @('/t', '/user') `
-193	            -PassThru -Wait
-194	          if ($setup.ExitCode -ne 0) {
-195	            if (Test-Path "$env:TEMP\weasel-register.log") {
-196	              Get-Content "$env:TEMP\weasel-register.log"
-197	            }
-198	            throw "WeaselSetup /t /user failed with exit code $($setup.ExitCode)"
-199	          }
-200	
-201	          $tipPath = 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}'
-202	          $userProfilePath = 'HKCU:\Control Panel\International\User Profile\zh-Hant-TW'
-203	          $tipName = '0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}'
-204	
-205	          if (-not (Test-Path $tipPath)) {
-206	            throw 'Per-user CTF TIP registration was not created.'
-207	          }
-208	
-209	          $profile = Get-ItemProperty -Path $userProfilePath -ErrorAction Stop
-210	          if ($null -eq $profile.$tipName) {
-211	            throw 'Weasel was not added to the current-user language profile.'
-212	          }
-213	          Write-Host "User Profile immediately after setup: $($profile.$tipName)"
-214	
-215	          # Force Windows to enumerate/reconcile the current user's input methods.
-216	          Write-Host 'WinUserLanguageList after signed registration:'
-217	          Get-WinUserLanguageList | Format-List *
-218	
-219	          Start-Process "$env:WINDIR\System32\ctfmon.exe"
-220	          Start-Sleep -Seconds 3
-221	
-222	          $tipStillPresent = Test-Path $tipPath
-223	          $profileAfter = Get-ItemProperty -Path $userProfilePath -ErrorAction Stop
-224	          $userProfileStillPresent = $null -ne $profileAfter.$tipName
-225	          Write-Host "TIP after reconciliation: $tipStillPresent"
-226	          Write-Host "User Profile entry after reconciliation: $userProfileStillPresent"
-227	
-228	          if (Test-Path "$env:TEMP\weasel-register.log") {
-229	            Write-Host 'Registration trace:'
-230	            Get-Content "$env:TEMP\weasel-register.log"
-231	          }
-232	
-233	          if (-not $tipStillPresent -or -not $userProfileStillPresent) {
-234	            throw 'Signed per-user TSF registration did not survive Windows reconciliation.'
-235	          }
-236	
-237	      - name: Compress Debug Symbols
-238	        if: matrix.variant == 'msbuild'
-239	        shell: pwsh
-240	        run: |
-241	          $ErrorActionPreference = 'Stop'
-242	          output\7z.exe a -t7z "./output/archives/debug_symbols.7z" "output/*.pdb" -r
-243	
-244	      - name: Upload artifacts
-245	        if: matrix.variant == 'msbuild'
-246	        uses: actions/upload-artifact@v4
-247	        with:
-248	          name: weasel-artifact-${{ env.git_ref_name }}
-249	          if-no-files-found: error
-250	          path: |
-251	            .\output\archives\weasel*.exe
-252	            .\output\archives\debug_symbols.7z
-253	
-254	      # Release-only steps (run on tags or master)
-255	      - name: Extract changelog
-256	        if: ${{ github.repository == 'rime/weasel' && startsWith(github.ref, 'refs/tags/') && matrix.variant == 'msbuild' }}
-257	        shell: pwsh
-258	        run: .\extract_changelog.ps1
-259	
-260	      - name: Create Nightly release
-261	        if: ${{ github.repository == 'rime/weasel' && github.ref == 'refs/heads/master' && matrix.variant == 'msbuild' }}
-262	        uses: 'marvinpinto/action-automatic-releases@latest'
-263	        with:
-264	          repo_token: ${{ secrets.GITHUB_TOKEN }}
-265	          automatic_release_tag: latest
-266	          prerelease: true
-267	          title: "Nightly Build"
-268	          files: |
-269	            ./output/archives/weasel*.exe
-270	            ./output/archives/debug_symbols.7z
-271	
-272	      - name: Release (stable)
-273	        if: ${{ github.repository == 'rime/weasel' && startsWith(github.ref, 'refs/tags/') && matrix.variant == 'msbuild' }}
-274	        uses: softprops/action-gh-release@v2
-275	        with:
-276	          draft: true
-277	          files: |
-278	            ./output/archives/weasel*.exe
-279	            ./output/archives/debug_symbols.7z
-280	          body_path: ${{ github.workspace }}/RELEASE_CHANGELOG.md
-281	
+name: CI
+
+on:
+  push:
+    branches:
+      - '*'
+    tags:
+      - '[0-9]+.*'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout last commit
+        uses: actions/checkout@v4
+
+      - name: Install clang-format 18
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          wget https://apt.llvm.org/llvm-snapshot.gpg.key
+          sudo gpg --dearmor < llvm-snapshot.gpg.key > /usr/share/keyrings/llvm-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm-archive-keyring.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" | sudo tee /etc/apt/sources.list.d/llvm-toolchain-jammy-18.list
+          sudo apt-get update
+          sudo apt-get install -y clang-format-18
+          sudo ln -sf /usr/bin/clang-format-18 /usr/local/bin/clang-format
+          clang-format --version
+
+      - name: Code style lint
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        shell: bash
+        run: ./clang-format.sh -i
+
+  build:
+    needs: lint
+    runs-on: windows-2022
+    env:
+      boost_version: 1.84.0
+      BOOST_ROOT: ${{ github.workspace }}\deps\boost_1_84_0
+      SDKVER: 10.0.19041.0
+    strategy:
+      matrix:
+        variant: [msbuild, xmake]
+    steps:
+      - name: Checkout last commit
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --tags
+
+      - name: Configure build environment
+        shell: bash
+        run: |
+          cp env.vs2022.bat env.bat
+          echo git_ref_name="$(git describe --always)" >> $GITHUB_ENV
+
+      - name: Cache Boost
+        id: cache-boost
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.BOOST_ROOT }}
+          key: ${{ runner.os }}-boost-${{ env.boost_version }}
+
+      - name: Install Boost
+        if: steps.cache-boost.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          ./install_boost.bat
+          ./build.bat boost arm64
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          sdk: ${{ env.SDKVER }}
+
+      # bundled winsparkle v0.9.2 to disable auto open ReleaseNoteUrl in default browser
+      - name: cache bundled winsparkle
+        id: cache-winsparkle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}\winsparkle\x64\Release\WinSparkle.dll
+            ${{ github.workspace }}\winsparkle\x64\Release\WinSparkle.lib
+            ${{ github.workspace }}\winsparkle\Release\WinSparkle.dll
+            ${{ github.workspace }}\winsparkle\Release\WinSparkle.lib
+          key: ${{ runner.os }}-winsparkle-v0.9.2-bundled
+          restore-keys: |
+            winsparkle-v0.9.2-bundled
+
+      - name: Build bundled winsparkle
+        if: steps.cache-winsparkle.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path winsparkle) { Remove-Item -Recurse -Force winsparkle }
+          # Clone winsparkle repo v0.9.2
+          git clone https://github.com/vslavik/winsparkle.git -b v0.9.2 --depth 1
+          cd winsparkle
+          git submodule update --init --recursive
+          copy ..\bundled_winsparkle.patch .
+          git apply bundled_winsparkle.patch
+          nuget restore
+          msbuild -m -t:Build -p:Configuration=Release -p:Platform=x64 WinSparkle.sln
+          msbuild -m -t:Build -p:Configuration=Release -p:Platform=Win32 WinSparkle.sln
+
+      - name: Install WinSparkle files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          copy .\winsparkle\x64\Release\WinSparkle.dll .\output\
+          copy .\winsparkle\x64\Release\WinSparkle.lib .\lib64\
+          copy .\winsparkle\Release\WinSparkle.dll .\output\Win32\
+          copy .\winsparkle\Release\WinSparkle.lib .\lib\
+
+      - name: Get Rime files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\get-rime.ps1 -use dev
+
+      - name: Build data
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\build.bat data
+
+      - name: Setup xmake
+        if: matrix.variant == 'xmake'
+        uses: xmake-io/github-action-setup-xmake@v1
+
+      - name: Build Weasel
+        shell: pwsh
+        id: build_weasel
+        env:
+          RELEASE_BUILD: ${{ (github.repository == 'rime/weasel' && startsWith(github.ref, 'refs/tags/')) && '1' || '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ('${{ matrix.variant }}' -eq 'msbuild') {
+            .\build.bat arm64 installer
+          } else {
+            .\xbuild.bat arm64 installer
+          }
+
+      - name: Signed per-user TSF smoke test
+        if: matrix.variant == 'msbuild' && !startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Match the zh-Hant-TW environment used by the per-user test case.
+          $languages = New-WinUserLanguageList 'zh-Hant-TW'
+          Set-WinUserLanguageList -LanguageList $languages -Force
+
+          # A temporary CurrentUser code-signing certificate keeps this test
+          # entirely non-admin while satisfying Windows' signed IME requirement.
+          $cert = New-SelfSignedCertificate `
+            -Type CodeSigningCert `
+            -Subject 'CN=Weasel CI Test IME' `
+            -CertStoreLocation 'Cert:\CurrentUser\My'
+          $cer = Join-Path $env:TEMP 'weasel-ci-test.cer'
+          Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+          Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+          Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\TrustedPublisher' | Out-Null
+
+          foreach ($dll in @('.\output\weasel.dll', '.\output\weaselx64.dll')) {
+            Unblock-File $dll
+            $signature = Set-AuthenticodeSignature $dll $cert -HashAlgorithm SHA256
+            if ($signature.Status -ne 'Valid') {
+              throw "Failed to sign $dll: $($signature.Status) $($signature.StatusMessage)"
+            }
+          }
+
+          Write-Host 'Authenticode status:'
+          Get-AuthenticodeSignature .\output\weasel.dll, .\output\weaselx64.dll |
+            Format-Table Path, Status, StatusMessage -AutoSize
+
+          # Remove stale test state and run the same current-user Traditional
+          # Chinese registration path as the per-user installer.
+          Remove-Item 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}' `
+            -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-ItemProperty `
+            -Path 'HKCU:\Control Panel\International\User Profile\zh-Hant-TW' `
+            -Name '0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}' `
+            -ErrorAction SilentlyContinue
+
+          $setup = Start-Process `
+            -FilePath '.\output\WeaselSetup.exe' `
+            -ArgumentList @('/t', '/user') `
+            -PassThru -Wait
+          if ($setup.ExitCode -ne 0) {
+            if (Test-Path "$env:TEMP\weasel-register.log") {
+              Get-Content "$env:TEMP\weasel-register.log"
+            }
+            throw "WeaselSetup /t /user failed with exit code $($setup.ExitCode)"
+          }
+
+          $tipPath = 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}'
+          $userProfilePath = 'HKCU:\Control Panel\International\User Profile\zh-Hant-TW'
+          $tipName = '0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}'
+
+          if (-not (Test-Path $tipPath)) {
+            throw 'Per-user CTF TIP registration was not created.'
+          }
+
+          $profile = Get-ItemProperty -Path $userProfilePath -ErrorAction Stop
+          if ($null -eq $profile.$tipName) {
+            throw 'Weasel was not added to the current-user language profile.'
+          }
+          Write-Host "User Profile immediately after setup: $($profile.$tipName)"
+
+          # Force Windows to enumerate/reconcile the current user's input methods.
+          Write-Host 'WinUserLanguageList after signed registration:'
+          Get-WinUserLanguageList | Format-List *
+
+          Start-Process "$env:WINDIR\System32\ctfmon.exe"
+          Start-Sleep -Seconds 3
+
+          $tipStillPresent = Test-Path $tipPath
+          $profileAfter = Get-ItemProperty -Path $userProfilePath -ErrorAction Stop
+          $userProfileStillPresent = $null -ne $profileAfter.$tipName
+          Write-Host "TIP after reconciliation: $tipStillPresent"
+          Write-Host "User Profile entry after reconciliation: $userProfileStillPresent"
+
+          if (Test-Path "$env:TEMP\weasel-register.log") {
+            Write-Host 'Registration trace:'
+            Get-Content "$env:TEMP\weasel-register.log"
+          }
+
+          if (-not $tipStillPresent -or -not $userProfileStillPresent) {
+            throw 'Signed per-user TSF registration did not survive Windows reconciliation.'
+          }
+
+      - name: Compress Debug Symbols
+        if: matrix.variant == 'msbuild'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          output\7z.exe a -t7z "./output/archives/debug_symbols.7z" "output/*.pdb" -r
+
+      - name: Upload artifacts
+        if: matrix.variant == 'msbuild'
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-artifact-${{ env.git_ref_name }}
+          if-no-files-found: error
+          path: |
+            .\output\archives\weasel*.exe
+            .\output\archives\debug_symbols.7z
+
+      # Release-only steps (run on tags or master)
+      - name: Extract changelog
+        if: ${{ github.repository == 'rime/weasel' && startsWith(github.ref, 'refs/tags/') && matrix.variant == 'msbuild' }}
+        shell: pwsh
+        run: .\extract_changelog.ps1
+
+      - name: Create Nightly release
+        if: ${{ github.repository == 'rime/weasel' && github.ref == 'refs/heads/master' && matrix.variant == 'msbuild' }}
+        uses: 'marvinpinto/action-automatic-releases@latest'
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          automatic_release_tag: latest
+          prerelease: true
+          title: "Nightly Build"
+          files: |
+            ./output/archives/weasel*.exe
+            ./output/archives/debug_symbols.7z
+
+      - name: Release (stable)
+        if: ${{ github.repository == 'rime/weasel' && startsWith(github.ref, 'refs/tags/') && matrix.variant == 'msbuild' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            ./output/archives/weasel*.exe
+            ./output/archives/debug_symbols.7z
+          body_path: ${{ github.workspace }}/RELEASE_CHANGELOG.md
