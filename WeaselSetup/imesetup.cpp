@@ -121,6 +121,20 @@ static bool is_per_user_registration() {
          0;
 }
 
+static bool override_machine_registry_for_current_user(bool enable) {
+  if (!enable)
+    return RegOverridePredefKey(HKEY_LOCAL_MACHINE, NULL) == ERROR_SUCCESS;
+
+  HKEY current_user = NULL;
+  LSTATUS result = RegOpenCurrentUser(KEY_READ | KEY_WRITE, &current_user);
+  if (result != ERROR_SUCCESS)
+    return false;
+
+  result = RegOverridePredefKey(HKEY_LOCAL_MACHINE, current_user);
+  RegCloseKey(current_user);
+  return result == ERROR_SUCCESS;
+}
+
 static LANGID profile_to_lang_id(const std::wstring& profile) {
   if (profile == L"hant")
     return MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL);
@@ -386,8 +400,7 @@ int uninstall_ime_file(const std::wstring& ext,
 void enable_profile(BOOL fEnable,
                     const std::wstring& profile,
                     bool per_user = false) {
-  if (per_user && RegOverridePredefKey(HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER) !=
-                      ERROR_SUCCESS) {
+  if (per_user && !override_machine_registry_for_current_user(true)) {
     return;
   }
 
@@ -414,7 +427,7 @@ void enable_profile(BOOL fEnable,
   }
 
   if (per_user)
-    RegOverridePredefKey(HKEY_LOCAL_MACHINE, NULL);
+    override_machine_registry_for_current_user(false);
 }
 
 // 注册TSF输入法
@@ -541,10 +554,9 @@ int install(const std::wstring& profile, bool silent, bool per_user) {
             (PTF_INSTALLLAYOUTORTIPUSERREG)GetProcAddress(
                 hInputDLL, "InstallLayoutOrTipUserReg");
         if (pfnInstallLayoutOrTipUserReg &&
-            RegOverridePredefKey(HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER) ==
-                ERROR_SUCCESS) {
+            override_machine_registry_for_current_user(true)) {
           (*pfnInstallLayoutOrTipUserReg)(NULL, NULL, NULL, title.c_str(), 0);
-          RegOverridePredefKey(HKEY_LOCAL_MACHINE, NULL);
+          override_machine_registry_for_current_user(false);
         }
       } else {
         auto pfnInstallLayoutOrTip = (PTF_INSTALLLAYOUTORTIP)GetProcAddress(
@@ -611,11 +623,10 @@ int uninstall(bool silent, bool per_user) {
               (PTF_INSTALLLAYOUTORTIPUSERREG)GetProcAddress(
                   hInputDLL, "InstallLayoutOrTipUserReg");
           if (pfnInstallLayoutOrTipUserReg &&
-              RegOverridePredefKey(HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER) ==
-                  ERROR_SUCCESS) {
+              override_machine_registry_for_current_user(true)) {
             (*pfnInstallLayoutOrTipUserReg)(NULL, NULL, NULL, title.c_str(),
                                             ILOT_UNINSTALL);
-            RegOverridePredefKey(HKEY_LOCAL_MACHINE, NULL);
+            override_machine_registry_for_current_user(false);
           }
         } else {
           auto pfnInstallLayoutOrTip = (PTF_INSTALLLAYOUTORTIP)GetProcAddress(

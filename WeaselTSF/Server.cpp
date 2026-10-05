@@ -81,8 +81,16 @@ static bool IsPerUserRegistration() {
 }
 
 static HRESULT OverrideMachineRegistryForCurrentUser(bool enable) {
-  const LSTATUS result = RegOverridePredefKey(
-      HKEY_LOCAL_MACHINE, enable ? HKEY_CURRENT_USER : NULL);
+  if (!enable)
+    return HRESULT_FROM_WIN32(RegOverridePredefKey(HKEY_LOCAL_MACHINE, NULL));
+
+  HKEY current_user = NULL;
+  LSTATUS result = RegOpenCurrentUser(KEY_READ | KEY_WRITE, &current_user);
+  if (result != ERROR_SUCCESS)
+    return HRESULT_FROM_WIN32(result);
+
+  result = RegOverridePredefKey(HKEY_LOCAL_MACHINE, current_user);
+  RegCloseKey(current_user);
   return HRESULT_FROM_WIN32(result);
 }
 
