@@ -271,7 +271,7 @@ jobs:
                                   IID_ITfInputProcessorProfiles,
                                   reinterpret_cast<void**>(&profiles));
             if (FAILED(hr)) {
-              std::wprintf(L"CoCreateInstance failed: 0x%08X\n",
+              std::printf(L"CoCreateInstance failed: 0x%08X\n",
                            static_cast<unsigned>(hr));
               CoUninitialize();
               return 3;
@@ -280,7 +280,7 @@ jobs:
             IEnumTfLanguageProfiles* enumerator = nullptr;
             hr = profiles->EnumLanguageProfiles(0x0404, &enumerator);
             if (FAILED(hr)) {
-              std::wprintf(L"EnumLanguageProfiles failed: 0x%08X\n",
+              std::printf(L"EnumLanguageProfiles failed: 0x%08X\n",
                            static_cast<unsigned>(hr));
               profiles->Release();
               CoUninitialize();
@@ -294,7 +294,7 @@ jobs:
               if (IsEqualGUID(item.clsid, weasel) &&
                   IsEqualGUID(item.guidProfile, profile)) {
                 found = true;
-                std::wprintf(L"Weasel TSF profile enumerated: active=%d langid=0x%04X\n",
+                std::printf(L"Weasel TSF profile enumerated: active=%d langid=0x%04X\n",
                              item.fActive, item.langid);
               }
             }
@@ -303,8 +303,8 @@ jobs:
             profiles->Release();
             CoUninitialize();
 
-            std::wprintf(L"Weasel TSF profile found: %s\n",
-                         found ? L"true" : L"false");
+            std::printf(L"Weasel TSF profile found: %s\n",
+                         found ? "true" : "false");
             return found ? 0 : 10;
           }
           '@ | Set-Content -Path $probeSource -Encoding ascii
