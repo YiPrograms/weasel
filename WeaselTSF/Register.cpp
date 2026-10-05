@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <cstdarg>
 #include "Register.h"
 #include <strsafe.h>
 #include <WeaselUtility.h>
@@ -13,6 +14,37 @@ static const char c_szUserClassesRoot[] = "Software\\Classes";
 static const WCHAR c_szUserTipRoot[] = L"Software\\Microsoft\\CTF\\TIP";
 static const WCHAR c_szUserCategoryRoot[] =
     L"Software\\Microsoft\\CTF\\Categories\\Category\\Item";
+
+static void TraceRegistration(const wchar_t* format, ...) {
+  WCHAR path[MAX_PATH] = {};
+  if (!GetTempPathW(ARRAYSIZE(path), path))
+    return;
+  if (FAILED(StringCchCatW(path, ARRAYSIZE(path), L"weasel-register.log")))
+    return;
+
+  WCHAR message[1024] = {};
+  va_list args;
+  va_start(args, format);
+  StringCchVPrintfW(message, ARRAYSIZE(message), format, args);
+  va_end(args);
+
+  HANDLE file =
+      CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                  NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (file == INVALID_HANDLE_VALUE)
+    return;
+
+  char utf8[4096] = {};
+  const int length = WideCharToMultiByte(CP_UTF8, 0, message, -1, utf8,
+                                         ARRAYSIZE(utf8), NULL, NULL);
+  if (length > 1) {
+    DWORD written;
+    WriteFile(file, utf8, length - 1, &written, NULL);
+    static const char newline[] = "\r\n";
+    WriteFile(file, newline, sizeof(newline) - 1, &written, NULL);
+  }
+  CloseHandle(file);
+}
 
 static bool IsPerUserRegistration() {
   WCHAR value[2];
@@ -191,9 +223,11 @@ BOOL RegisterProfilesForCurrentUser() {
   const std::wstring tip_root = std::wstring(c_szUserTipRoot) + L"\\" + clsid;
   HKEY root_key;
   DWORD disposition;
-  if (RegCreateKeyExW(HKEY_CURRENT_USER, tip_root.c_str(), 0, NULL,
-                      REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &root_key,
-                      &disposition) != ERROR_SUCCESS)
+  LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, tip_root.c_str(), 0, NULL,
+                                   REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL,
+                                   &root_key, &disposition);
+  TraceRegistration(L"TIP root status=%ld path=%s", status, tip_root.c_str());
+  if (status != ERROR_SUCCESS)
     return FALSE;
   SetDwordValueW(root_key, L"Enable", 1);
   RegCloseKey(root_key);
@@ -205,9 +239,12 @@ BOOL RegisterProfilesForCurrentUser() {
         tip_root + L"\\LanguageProfile\\" + lang_id + L"\\" + profile_guid;
 
     HKEY key;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0, NULL,
-                        REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &key,
-                        &disposition) != ERROR_SUCCESS)
+    status = RegCreateKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0, NULL,
+                             REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &key,
+                             &disposition);
+    TraceRegistration(L"Profile key status=%ld path=%s", status,
+                      key_path.c_str());
+    if (status != ERROR_SUCCESS)
       return FALSE;
 
     bool ok = SetStringValueW(key, L"Description", description) &&
@@ -294,8 +331,10 @@ BOOL RegisterCategoriesForCurrentUser() {
         !CreateEmptyUserKey(tip_root + L"\\Category\\Item\\" + clsid + L"\\" +
                             category) ||
         !CreateEmptyUserKey(std::wstring(c_szUserCategoryRoot) + L"\\" +
-                            category + L"\\" + clsid))
+                            category + L"\\" + clsid)) {
+      TraceRegistration(L"Category registration failed: %s", category.c_str());
       return FALSE;
+    }
   }
   return TRUE;
 }

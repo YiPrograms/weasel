@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <cstdarg>
 
 #include "Globals.h"
 #include "Register.h"
@@ -74,6 +75,37 @@ STDMETHODIMP CClassFactory::LockServer(BOOL fLock) {
 
 static CClassFactory* g_classFactory = NULL;
 
+static void TraceRegistration(const wchar_t* format, ...) {
+  WCHAR path[MAX_PATH] = {};
+  if (!GetTempPathW(ARRAYSIZE(path), path))
+    return;
+  if (FAILED(StringCchCatW(path, ARRAYSIZE(path), L"weasel-register.log")))
+    return;
+
+  WCHAR message[1024] = {};
+  va_list args;
+  va_start(args, format);
+  StringCchVPrintfW(message, ARRAYSIZE(message), format, args);
+  va_end(args);
+
+  HANDLE file =
+      CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                  NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (file == INVALID_HANDLE_VALUE)
+    return;
+
+  char utf8[4096] = {};
+  const int length = WideCharToMultiByte(CP_UTF8, 0, message, -1, utf8,
+                                         ARRAYSIZE(utf8), NULL, NULL);
+  if (length > 1) {
+    DWORD written;
+    WriteFile(file, utf8, length - 1, &written, NULL);
+    static const char newline[] = "\r\n";
+    WriteFile(file, newline, sizeof(newline) - 1, &written, NULL);
+  }
+  CloseHandle(file);
+}
+
 static bool IsPerUserRegistration() {
   WCHAR value[2];
   return GetEnvironmentVariableW(L"WEASEL_PER_USER", value, _countof(value)) >
@@ -138,6 +170,8 @@ STDAPI DllUnregisterServer() {
 }
 
 STDAPI DllInstall(BOOL install, LPCWSTR command_line) {
+  TraceRegistration(L"DllInstall enter install=%d command=%s", install,
+                    command_line ? command_line : L"(null)");
   if (!command_line)
     return E_INVALIDARG;
 
@@ -156,8 +190,13 @@ STDAPI DllInstall(BOOL install, LPCWSTR command_line) {
 
   HRESULT result = S_OK;
   if (install) {
-    if (!RegisterServer() || !RegisterProfilesForCurrentUser() ||
-        !RegisterCategoriesForCurrentUser()) {
+    const bool server = RegisterServer();
+    TraceRegistration(L"RegisterServer=%d", server);
+    const bool profiles = server && RegisterProfilesForCurrentUser();
+    TraceRegistration(L"RegisterProfilesForCurrentUser=%d", profiles);
+    const bool categories = profiles && RegisterCategoriesForCurrentUser();
+    TraceRegistration(L"RegisterCategoriesForCurrentUser=%d", categories);
+    if (!server || !profiles || !categories) {
       UnregisterProfilesForCurrentUser();
       UnregisterCategoriesForCurrentUser();
       UnregisterServer();
@@ -171,5 +210,6 @@ STDAPI DllInstall(BOOL install, LPCWSTR command_line) {
 
   SetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", NULL);
   SetEnvironmentVariableW(L"WEASEL_PER_USER", NULL);
+  TraceRegistration(L"DllInstall leave result=0x%08X", result);
   return result;
 }

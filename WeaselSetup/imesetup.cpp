@@ -1,6 +1,7 @@
 ﻿#include "stdafx.h"
 #include <string>
 #include <vector>
+#include <cstdarg>
 #include <msctf.h>
 #include <strsafe.h>
 #include <StringAlgorithm.hpp>
@@ -29,6 +30,34 @@ typedef BOOL(WINAPI* PTF_INSTALLLAYOUTORTIPUSERREG)(LPCWSTR pszUserReg,
                                                     LPCWSTR pszSoftwareReg,
                                                     LPCWSTR psz,
                                                     DWORD dwFlags);
+
+static void TraceRegistration(const wchar_t* format, ...) {
+  WCHAR path[MAX_PATH] = {};
+  if (!GetTempPathW(_countof(path), path))
+    return;
+  if (FAILED(StringCchCatW(path, _countof(path), L"weasel-register.log")))
+    return;
+  WCHAR message[1024] = {};
+  va_list args;
+  va_start(args, format);
+  StringCchVPrintfW(message, _countof(message), format, args);
+  va_end(args);
+  HANDLE file =
+      CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                  NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (file == INVALID_HANDLE_VALUE)
+    return;
+  char utf8[4096] = {};
+  int length = WideCharToMultiByte(CP_UTF8, 0, message, -1, utf8,
+                                   _countof(utf8), NULL, NULL);
+  if (length > 1) {
+    DWORD written;
+    WriteFile(file, utf8, length - 1, &written, NULL);
+    static const char newline[] = "\r\n";
+    WriteFile(file, newline, sizeof(newline) - 1, &written, NULL);
+  }
+  CloseHandle(file);
+}
 
 #define WEASEL_WER_KEY                            \
   L"SOFTWARE\\Microsoft\\Windows\\Windows Error " \
@@ -460,6 +489,9 @@ int register_text_service(const std::wstring& tsf_path,
     }
   }
 
+  TraceRegistration(L"WeaselSetup regsvr32 path=%s params=%s", tsf_path.c_str(),
+                    params.c_str());
+
   std::wstring app = L"regsvr32.exe";
   if (is_wowarm32) {
     WCHAR sysarm32[MAX_PATH];
@@ -483,6 +515,7 @@ int register_text_service(const std::wstring& tsf_path,
     DWORD exit_code = 1;
     GetExitCodeProcess(shExInfo.hProcess, &exit_code);
     CloseHandle(shExInfo.hProcess);
+    TraceRegistration(L"regsvr32 exit=%lu", exit_code);
     if (exit_code != 0)
       return 1;
   } else {
@@ -504,6 +537,14 @@ int register_text_service(const std::wstring& tsf_path,
 int install(const std::wstring& profile, bool silent, bool per_user) {
   std::wstring ime_src_path;
   int retval = 0;
+
+  if (per_user) {
+    WCHAR trace_path[MAX_PATH] = {};
+    if (GetTempPathW(_countof(trace_path), trace_path) &&
+        SUCCEEDED(StringCchCatW(trace_path, _countof(trace_path),
+                                L"weasel-register.log")))
+      DeleteFileW(trace_path);
+  }
 
   retval += install_ime_file(ime_src_path, L".dll", profile, silent, per_user,
                              &register_text_service);
