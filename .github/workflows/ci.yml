@@ -146,6 +146,112 @@ jobs:
             .\xbuild.bat arm64 installer
           }
 
+      - name: Unsigned per-user TSF comparison
+        if: matrix.variant == 'msbuild' && !startsWith(github.ref, 'refs/tags/')
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $tipPath = 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}'
+          $userProfilePath = 'HKCU:\Control Panel\International\User Profile\zh-Hant-TW'
+          $tipName = '0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}'
+
+          Write-Host 'phase=unsigned-seed-language-profile'
+          $userProfileRoot = 'HKCU:\Control Panel\International\User Profile'
+          New-Item -Path $userProfileRoot -Force | Out-Null
+          New-ItemProperty `
+            -Path $userProfileRoot `
+            -Name 'Languages' `
+            -PropertyType MultiString `
+            -Value @('zh-Hant-TW') `
+            -Force | Out-Null
+
+          Write-Host 'phase=unsigned-check-signatures'
+          foreach ($dll in @('.\output\weasel.dll', '.\output\weaselx64.dll')) {
+            $signature = Get-AuthenticodeSignature $dll
+            Write-Host "Unsigned baseline signature $dll: $($signature.Status)"
+            if ($signature.Status -eq 'Valid') {
+              throw "Unsigned baseline is unexpectedly signed: $dll"
+            }
+          }
+
+          Write-Host 'phase=unsigned-clear-stale-registration'
+          Remove-Item $tipPath -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-ItemProperty `
+            -Path $userProfilePath `
+            -Name $tipName `
+            -ErrorAction SilentlyContinue
+
+          Write-Host 'phase=unsigned-run-weasel-setup'
+          $setup = Start-Process `
+            -FilePath '.\output\WeaselSetup.exe' `
+            -ArgumentList @('/t', '/user') `
+            -PassThru
+          if (-not $setup.WaitForExit(90000)) {
+            Stop-Process -Id $setup.Id -Force -ErrorAction SilentlyContinue
+            if (Test-Path "$env:TEMP\weasel-register.log") {
+              Get-Content "$env:TEMP\weasel-register.log"
+            }
+            throw 'Unsigned WeaselSetup /t /user timed out.'
+          }
+          if ($setup.ExitCode -ne 0) {
+            if (Test-Path "$env:TEMP\weasel-register.log") {
+              Get-Content "$env:TEMP\weasel-register.log"
+            }
+            throw "Unsigned WeaselSetup /t /user failed with exit code $($setup.ExitCode)"
+          }
+
+          $tipImmediatelyPresent = Test-Path $tipPath
+          $profile = Get-ItemProperty -Path $userProfilePath -ErrorAction SilentlyContinue
+          $profileImmediatelyPresent = $null -ne $profile -and $null -ne $profile.$tipName
+          Write-Host "Unsigned TIP immediately after setup: $tipImmediatelyPresent"
+          Write-Host "Unsigned User Profile immediately after setup: $profileImmediatelyPresent"
+
+          Write-Host 'phase=unsigned-language-list-probe'
+          $probeOut = Join-Path $env:TEMP 'weasel-unsigned-language-list.txt'
+          $probeErr = Join-Path $env:TEMP 'weasel-unsigned-language-list.err.txt'
+          Remove-Item $probeOut, $probeErr -Force -ErrorAction SilentlyContinue
+          $probeCommand = 'Get-WinUserLanguageList | Format-List *'
+          $encodedProbe = [Convert]::ToBase64String(
+            [Text.Encoding]::Unicode.GetBytes($probeCommand)
+          )
+          $probe = Start-Process `
+            -FilePath 'powershell.exe' `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedProbe) `
+            -RedirectStandardOutput $probeOut `
+            -RedirectStandardError $probeErr `
+            -PassThru
+          if (-not $probe.WaitForExit(20000)) {
+            Write-Warning 'Unsigned Get-WinUserLanguageList timed out on the hosted runner.'
+            Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue
+          } elseif ($probe.ExitCode -ne 0) {
+            Write-Warning "Unsigned Get-WinUserLanguageList exited with $($probe.ExitCode)."
+          }
+
+          $probeText = ''
+          if (Test-Path $probeOut) {
+            $probeText = Get-Content $probeOut -Raw
+            Write-Host 'Unsigned WinUserLanguageList output:'
+            Write-Host $probeText
+          }
+          if (Test-Path $probeErr) {
+            Get-Content $probeErr
+          }
+
+          $unsignedListed = $probeText -like "*$tipName*"
+          $tipStillPresent = Test-Path $tipPath
+          $profileAfter = Get-ItemProperty -Path $userProfilePath -ErrorAction SilentlyContinue
+          $userProfileStillPresent = $null -ne $profileAfter -and $null -ne $profileAfter.$tipName
+          Write-Host "Unsigned language list contains Weasel: $unsignedListed"
+          Write-Host "Unsigned TIP after language-list probe: $tipStillPresent"
+          Write-Host "Unsigned User Profile after language-list probe: $userProfileStillPresent"
+
+          if (Test-Path "$env:TEMP\weasel-register.log") {
+            Write-Host 'Unsigned registration trace:'
+            Get-Content "$env:TEMP\weasel-register.log"
+          }
+
       - name: Signed per-user TSF smoke test
         if: matrix.variant == 'msbuild' && !startsWith(github.ref, 'refs/tags/')
         timeout-minutes: 5
