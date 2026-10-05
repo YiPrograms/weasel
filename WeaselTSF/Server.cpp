@@ -80,20 +80,6 @@ static bool IsPerUserRegistration() {
          0;
 }
 
-static HRESULT OverrideMachineRegistryForCurrentUser(bool enable) {
-  if (!enable)
-    return HRESULT_FROM_WIN32(RegOverridePredefKey(HKEY_LOCAL_MACHINE, NULL));
-
-  HKEY current_user = NULL;
-  LSTATUS result = RegOpenCurrentUser(KEY_READ | KEY_WRITE, &current_user);
-  if (result != ERROR_SUCCESS)
-    return HRESULT_FROM_WIN32(result);
-
-  result = RegOverridePredefKey(HKEY_LOCAL_MACHINE, current_user);
-  RegCloseKey(current_user);
-  return HRESULT_FROM_WIN32(result);
-}
-
 static void BuildGlobalObjects() {
   g_classFactory = new CClassFactory();
 }
@@ -125,17 +111,10 @@ STDAPI DllRegisterServer() {
     return E_FAIL;
 
   const bool per_user = IsPerUserRegistration();
-  if (per_user) {
-    const HRESULT hr = OverrideMachineRegistryForCurrentUser(true);
-    if (FAILED(hr)) {
-      UnregisterServer();
-      return hr;
-    }
-  }
-
-  const bool registered = RegisterProfiles() && RegisterCategories();
-  if (per_user)
-    OverrideMachineRegistryForCurrentUser(false);
+  const bool registered = per_user
+                              ? (RegisterProfilesForCurrentUser() &&
+                                 RegisterCategoriesForCurrentUser())
+                              : (RegisterProfiles() && RegisterCategories());
 
   if (!registered) {
     DllUnregisterServer();
@@ -147,16 +126,12 @@ STDAPI DllRegisterServer() {
 STDAPI DllUnregisterServer() {
   const bool per_user = IsPerUserRegistration();
   if (per_user) {
-    const HRESULT hr = OverrideMachineRegistryForCurrentUser(true);
-    if (FAILED(hr))
-      return hr;
+    UnregisterProfilesForCurrentUser();
+    UnregisterCategoriesForCurrentUser();
+  } else {
+    UnregisterProfiles();
+    UnregisterCategories();
   }
-
-  UnregisterProfiles();
-  UnregisterCategories();
-
-  if (per_user)
-    OverrideMachineRegistryForCurrentUser(false);
 
   UnregisterServer();
   return S_OK;

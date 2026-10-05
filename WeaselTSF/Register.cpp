@@ -10,6 +10,9 @@ static const char c_szTipKeyPrefix[] = "Software\\Microsft\\CTF\\TIP\\";
 static const char c_szInProcSvr32[] = "InprocServer32";
 static const char c_szModelName[] = "ThreadingModel";
 static const char c_szUserClassesRoot[] = "Software\\Classes";
+static const WCHAR c_szUserTipRoot[] = L"Software\\Microsoft\\CTF\\TIP";
+static const WCHAR c_szUserCategoryRoot[] =
+    L"Software\\Microsoft\\CTF\\Categories\\Category\\Item";
 
 static bool IsPerUserRegistration() {
   WCHAR value[2];
@@ -113,6 +116,127 @@ BOOL RegisterProfiles() {
   return TRUE;
 }
 
+static bool GuidToStringW(REFGUID guid, std::wstring& value) {
+  WCHAR buffer[64];
+  if (StringFromGUID2(guid, buffer, ARRAYSIZE(buffer)) <= 0)
+    return false;
+  value = buffer;
+  return true;
+}
+
+static bool SetStringValueW(HKEY key,
+                            LPCWSTR name,
+                            const std::wstring& value,
+                            DWORD type = REG_SZ) {
+  return RegSetValueExW(
+             key, name, 0, type, reinterpret_cast<const BYTE*>(value.c_str()),
+             static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) ==
+         ERROR_SUCCESS;
+}
+
+static bool SetDwordValueW(HKEY key, LPCWSTR name, DWORD value) {
+  return RegSetValueExW(key, name, 0, REG_DWORD,
+                        reinterpret_cast<const BYTE*>(&value),
+                        sizeof(value)) == ERROR_SUCCESS;
+}
+
+static bool CreateEmptyUserKey(const std::wstring& path) {
+  HKEY key;
+  DWORD disposition;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, NULL,
+                      REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &key,
+                      &disposition) != ERROR_SUCCESS)
+    return false;
+  RegCloseKey(key);
+  return true;
+}
+
+BOOL RegisterProfilesForCurrentUser() {
+  std::wstring clsid;
+  std::wstring profile_guid;
+  if (!GuidToStringW(c_clsidTextService, clsid) ||
+      !GuidToStringW(c_guidProfile, profile_guid))
+    return FALSE;
+
+  WCHAR selected_profile[100] = {};
+  std::wstring profile;
+  if (GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", selected_profile,
+                              ARRAYSIZE(selected_profile)) > 0)
+    profile = selected_profile;
+
+  BOOL hans_enable = (profile == L"hans");
+  BOOL hant_enable = (profile == L"hant");
+  BOOL hk_enable = (profile == L"hongkong");
+  BOOL macau_enable = (profile == L"macau");
+  BOOL sg_enable = (profile == L"singapore");
+  hans_enable = hans_enable || (!hant_enable && !hans_enable && !hk_enable &&
+                                !macau_enable && !sg_enable);
+
+  WCHAR icon_file[MAX_PATH] = {};
+  GetModuleFileNameW(g_hInst, icon_file, ARRAYSIZE(icon_file));
+  const auto description = get_weasel_ime_name();
+
+  const struct {
+    LANGID lang_id;
+    BOOL enable;
+    HKL substitute;
+  } profiles[] = {
+      {TEXTSERVICE_LANGID_HANS, hans_enable, FindIME(TEXTSERVICE_LANGID_HANS)},
+      {TEXTSERVICE_LANGID_HANT, hant_enable, FindIME(TEXTSERVICE_LANGID_HANT)},
+      {TEXTSERVICE_LANGID_HONGKONG, hk_enable, NULL},
+      {TEXTSERVICE_LANGID_MACAU, macau_enable, NULL},
+      {TEXTSERVICE_LANGID_SINGAPORE, sg_enable, NULL},
+  };
+
+  const std::wstring tip_root = std::wstring(c_szUserTipRoot) + L"\\" + clsid;
+  HKEY root_key;
+  DWORD disposition;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, tip_root.c_str(), 0, NULL,
+                      REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &root_key,
+                      &disposition) != ERROR_SUCCESS)
+    return FALSE;
+  SetDwordValueW(root_key, L"Enable", 1);
+  RegCloseKey(root_key);
+
+  for (const auto& item : profiles) {
+    WCHAR lang_id[16];
+    StringCchPrintfW(lang_id, ARRAYSIZE(lang_id), L"0x%08X", item.lang_id);
+    const std::wstring key_path =
+        tip_root + L"\\LanguageProfile\\" + lang_id + L"\\" + profile_guid;
+
+    HKEY key;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0, NULL,
+                        REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &key,
+                        &disposition) != ERROR_SUCCESS)
+      return FALSE;
+
+    bool ok = SetStringValueW(key, L"Description", description) &&
+              SetStringValueW(key, L"IconFile", icon_file) &&
+              SetDwordValueW(key, L"IconIndex", TEXTSERVICE_ICON_INDEX) &&
+              SetDwordValueW(key, L"Enable", item.enable ? 1 : 0);
+
+    if (item.substitute) {
+      WCHAR substitute[16];
+      StringCchPrintfW(
+          substitute, ARRAYSIZE(substitute), L"0x%08X",
+          static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(item.substitute)));
+      ok = ok && SetStringValueW(key, L"SubstituteLayout", substitute);
+    }
+    RegCloseKey(key);
+    if (!ok)
+      return FALSE;
+  }
+  return TRUE;
+}
+
+void UnregisterProfilesForCurrentUser() {
+  std::wstring clsid;
+  if (!GuidToStringW(c_clsidTextService, clsid))
+    return;
+  const std::wstring tip_root = std::wstring(c_szUserTipRoot) + L"\\" + clsid;
+  RegDeleteTreeW(HKEY_CURRENT_USER, tip_root.c_str());
+}
+
 void UnregisterProfiles() {
   CComPtr<ITfInputProcessorProfileMgr> pInputProcessorProfileMgr;
   if (FAILED(pInputProcessorProfileMgr.CoCreateInstance(
@@ -152,6 +276,43 @@ BOOL RegisterCategories() {
       return FALSE;
   }
   return TRUE;
+}
+
+BOOL RegisterCategoriesForCurrentUser() {
+  std::wstring clsid;
+  if (!GuidToStringW(c_clsidTextService, clsid))
+    return FALSE;
+
+  const std::wstring tip_root = std::wstring(c_szUserTipRoot) + L"\\" + clsid;
+  for (const auto& guid : SupportCategories0) {
+    std::wstring category;
+    if (!GuidToStringW(guid, category))
+      return FALSE;
+
+    if (!CreateEmptyUserKey(tip_root + L"\\Category\\Category\\" + category +
+                            L"\\" + clsid) ||
+        !CreateEmptyUserKey(tip_root + L"\\Category\\Item\\" + clsid + L"\\" +
+                            category) ||
+        !CreateEmptyUserKey(std::wstring(c_szUserCategoryRoot) + L"\\" +
+                            category + L"\\" + clsid))
+      return FALSE;
+  }
+  return TRUE;
+}
+
+void UnregisterCategoriesForCurrentUser() {
+  std::wstring clsid;
+  if (!GuidToStringW(c_clsidTextService, clsid))
+    return;
+
+  for (const auto& guid : SupportCategories0) {
+    std::wstring category;
+    if (!GuidToStringW(guid, category))
+      continue;
+    const std::wstring path =
+        std::wstring(c_szUserCategoryRoot) + L"\\" + category + L"\\" + clsid;
+    RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str());
+  }
 }
 
 void UnregisterCategories() {
