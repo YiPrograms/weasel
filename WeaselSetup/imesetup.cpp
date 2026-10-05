@@ -927,7 +927,14 @@ bool has_installed(bool per_user) {
     LSTATUS ret =
         RegQueryValueExW(hKey, L"WeaselRoot", NULL, &type, (LPBYTE)root, &size);
     RegCloseKey(hKey);
-    return ret == ERROR_SUCCESS && type == REG_SZ && root[0] != L'\0';
+    if (ret != ERROR_SUCCESS || type != REG_SZ || root[0] == L'\0')
+      return false;
+
+    const std::filesystem::path install_root(root);
+    return std::filesystem::is_directory(install_root) &&
+           std::filesystem::is_regular_file(install_root /
+                                            L"WeaselSetup.exe") &&
+           std::filesystem::is_regular_file(install_root / L"weasel.dll");
   }
 
   WCHAR path[MAX_PATH];
