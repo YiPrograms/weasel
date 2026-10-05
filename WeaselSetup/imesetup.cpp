@@ -840,9 +840,13 @@ int install(const std::wstring& profile, bool silent, bool per_user) {
   if (per_user && !update_user_input_method(profile, true))
     return 1;
 
-  MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_INSTALL_SUCCESS_INFO,
-                        IDS_STR_INSTALL_SUCCESS_CAP,
-                        MB_ICONINFORMATION | MB_OK);
+  TraceRegistration(L"install completed profile=%s per_user=%d",
+                    profile.c_str(), per_user);
+  if (!per_user) {
+    MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_INSTALL_SUCCESS_INFO,
+                          IDS_STR_INSTALL_SUCCESS_CAP,
+                          MB_ICONINFORMATION | MB_OK);
+  }
   return 0;
 }
 
