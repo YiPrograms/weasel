@@ -20,11 +20,12 @@ Unicode true
 
 !ifdef PER_USER
 !define INSTALL_SUFFIX "-user"
+!define WEASEL_ROOT $INSTDIR\weasel-${PRODUCT_VERSION}
 !else
 !define INSTALL_SUFFIX ""
+!define WEASEL_ROOT $INSTDIR\weasel-${WEASEL_VERSION}
 !endif
 
-!define WEASEL_ROOT $INSTDIR\weasel-${WEASEL_VERSION}
 !define REG_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
 
 ; The name of the installer
@@ -333,7 +334,11 @@ program_files:
 !ifdef PER_USER
   StrCpy $R2 "$R2 /user"
 !endif
-  ExecWait '"$INSTDIR\WeaselSetup.exe" $R2'
+  ExecWait '"$INSTDIR\WeaselSetup.exe" $R2' $R3
+  IntCmp $R3 0 setup_ok
+  MessageBox MB_OK|MB_ICONSTOP "Weasel input method registration failed (exit code $R3)."
+  Abort
+setup_ok:
 
   ; Write the uninstall keys for Windows
   WriteRegStr SHCTX "${REG_UNINST_KEY}" "DisplayName" "$(DISPLAYNAME)"
