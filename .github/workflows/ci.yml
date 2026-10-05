@@ -309,7 +309,7 @@ jobs:
           }
           '@ | Set-Content -Path $probeSource -Encoding ascii
 
-          & cl.exe /nologo /EHsc $probeSource /link ole32.lib /out:$probeExe
+          & cl.exe /nologo /EHsc $probeSource /link ole32.lib uuid.lib /out:$probeExe
           if ($LASTEXITCODE -ne 0) {
             throw "Failed to compile TSF probe: $LASTEXITCODE"
           }
@@ -495,6 +495,7 @@ jobs:
           Write-Host "User Profile entry after language-list probe: $userProfileStillPresent"
 
           Write-Host 'phase=signed-tsf-api-probe'
+          $probeExe = Join-Path $env:TEMP 'weasel-tsf-probe.exe'
           & $probeExe
           $signedTsfProbeExit = $LASTEXITCODE
           Write-Host "Signed TSF API probe exit code: $signedTsfProbeExit"
