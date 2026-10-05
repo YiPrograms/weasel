@@ -191,17 +191,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $testUser = 'tsfprobe'
-          $testPassword = 'TsfProbe!2026A'
-          & net.exe user $testUser $testPassword /add /passwordchg:no
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to create standard test user: $LASTEXITCODE"
-          }
+          $testPassword = ([Guid]::NewGuid().ToString('N') + 'aA1!')
+          $securePassword = ConvertTo-SecureString $testPassword -AsPlainText -Force
+          New-LocalUser -Name $testUser -Password $securePassword `
+            -AccountNeverExpires -PasswordNeverExpires | Out-Null
 
           try {
             $probe = 'C:\Users\Public\weasel-profile-probe.exe'
             Copy-Item "$env:TEMP\weasel-profile-probe.exe" $probe -Force
 
-            $securePassword = ConvertTo-SecureString $testPassword -AsPlainText -Force
             $credential = [PSCredential]::new("$env:COMPUTERNAME\$testUser", $securePassword)
             $stdout = Join-Path $env:RUNNER_TEMP 'tsf-register-standard-user.out'
             $stderr = Join-Path $env:RUNNER_TEMP 'tsf-register-standard-user.err'
@@ -218,7 +216,7 @@ jobs:
             }
           }
           finally {
-            & net.exe user $testUser /delete | Out-Null
+            Remove-LocalUser -Name $testUser -ErrorAction SilentlyContinue
           }
 
       - name: Install prebuilt per-user package
