@@ -211,13 +211,40 @@ jobs:
             std::printf("LoadLibrary(input.dll): %s\n", input ? "ok" : "failed");
             if (input) {
               using InstallLayoutOrTipFn = BOOL(WINAPI*)(LPCWSTR, DWORD);
+              using InstallLayoutOrTipUserRegFn = BOOL(WINAPI*)(
+                  LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, DWORD);
+              using QueryLayoutOrTipStringUserRegFn = HRESULT(WINAPI*)(
+                  LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, DWORD);
               auto install_layout_or_tip = reinterpret_cast<InstallLayoutOrTipFn>(
                   GetProcAddress(input, "InstallLayoutOrTip"));
+              auto install_layout_or_tip_user_reg =
+                  reinterpret_cast<InstallLayoutOrTipUserRegFn>(
+                      GetProcAddress(input, "InstallLayoutOrTipUserReg"));
+              auto query_layout_or_tip_user_reg =
+                  reinterpret_cast<QueryLayoutOrTipStringUserRegFn>(
+                      GetProcAddress(input, "QueryLayoutOrTipStringUserReg"));
               std::printf("GetProcAddress(InstallLayoutOrTip): %s\n",
                           install_layout_or_tip ? "ok" : "failed");
+              std::printf("GetProcAddress(InstallLayoutOrTipUserReg): %s\n",
+                          install_layout_or_tip_user_reg ? "ok" : "failed");
+              std::printf("GetProcAddress(QueryLayoutOrTipStringUserReg): %s\n",
+                          query_layout_or_tip_user_reg ? "ok" : "failed");
+              const WCHAR tip[] =
+                  L"0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}";
+              if (query_layout_or_tip_user_reg) {
+                HRESULT valid = query_layout_or_tip_user_reg(
+                    nullptr, nullptr, nullptr, tip, 0);
+                std::printf("QueryLayoutOrTipStringUserReg(default roots) HRESULT: 0x%08X\n",
+                            static_cast<unsigned>(valid));
+              }
+              if (install_layout_or_tip_user_reg) {
+                BOOL installed_user_reg = install_layout_or_tip_user_reg(
+                    nullptr, nullptr, nullptr, tip, 0);
+                std::printf("InstallLayoutOrTipUserReg(default roots) result: %d last_error=%lu\n",
+                            installed_user_reg ? 1 : 0,
+                            static_cast<unsigned long>(GetLastError()));
+              }
               if (install_layout_or_tip) {
-                const WCHAR tip[] =
-                    L"0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}";
                 BOOL installed = install_layout_or_tip(tip, 0);
                 std::printf("InstallLayoutOrTip result: %d last_error=%lu\n",
                             installed ? 1 : 0,
@@ -380,11 +407,7 @@ jobs:
 
             $seedLanguageOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-seed-language.out'
             $seedLanguageErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-seed-language.err'
-            $seedLanguageCommand = @'
-            $list = New-WinUserLanguageList 'zh-Hant-TW'
-            Set-WinUserLanguageList $list -Force
-            Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }
-            '@
+            $seedLanguageCommand = '$list = New-WinUserLanguageList "zh-Hant-TW"; Set-WinUserLanguageList $list -Force; Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }'
             $encodedSeedLanguageCommand = [Convert]::ToBase64String(
               [Text.Encoding]::Unicode.GetBytes($seedLanguageCommand))
             $seedLanguageProcess = Start-Process -FilePath 'powershell.exe' `
