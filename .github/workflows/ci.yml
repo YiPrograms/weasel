@@ -207,14 +207,20 @@ jobs:
             $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
           )
           foreach ($storeName in @('Root', 'TrustedPublisher')) {
+            Write-Host "phase=trust-$storeName-open"
             $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
               $storeName,
-              [System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser
+              [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
             )
             $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+
+            Write-Host "phase=trust-$storeName-add"
             $store.Add($publicCert)
+
+            Write-Host "phase=trust-$storeName-close"
             $store.Close()
           }
+          Write-Host 'phase=trust-test-certificate-done'
 
           Write-Host 'phase=sign-tsf-dlls'
           $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
