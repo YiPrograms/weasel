@@ -44,6 +44,14 @@ jobs:
           #include <windows.h>
           #include <msctf.h>
           #include <cstdio>
+          #include <cwchar>
+
+          static const GUID kWeaselClsid = {
+              0xA3F4CDED, 0xB1E9, 0x41EE,
+              {0x9C, 0xA6, 0x7B, 0x4D, 0x0D, 0xE6, 0xCB, 0x0A}};
+          static const GUID kWeaselProfile = {
+              0x3D02CAB6, 0x2B8E, 0x4781,
+              {0xBA, 0x20, 0x1C, 0x92, 0x67, 0x52, 0x94, 0x67}};
 
           static void print_guid(const GUID& g) {
             std::printf(
@@ -53,31 +61,13 @@ jobs:
                 g.Data4[4], g.Data4[5], g.Data4[6], g.Data4[7]);
           }
 
-          int wmain() {
-            HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-            if (FAILED(hr))
-              return 2;
-
-            ITfInputProcessorProfileMgr* mgr = nullptr;
-            hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
-                                  CLSCTX_INPROC_SERVER,
-                                  IID_ITfInputProcessorProfileMgr,
-                                  reinterpret_cast<void**>(&mgr));
-            if (FAILED(hr)) {
-              std::printf("CoCreateInstance failed: 0x%08X\n",
-                          static_cast<unsigned>(hr));
-              CoUninitialize();
-              return 3;
-            }
-
+          static HRESULT dump_profiles(ITfInputProcessorProfileMgr* mgr) {
             IEnumTfInputProcessorProfiles* e = nullptr;
-            hr = mgr->EnumProfiles(0x0404, &e);
+            HRESULT hr = mgr->EnumProfiles(0x0404, &e);
             if (FAILED(hr)) {
               std::printf("EnumProfiles failed: 0x%08X\n",
                           static_cast<unsigned>(hr));
-              mgr->Release();
-              CoUninitialize();
-              return 4;
+              return hr;
             }
 
             unsigned count = 0;
@@ -96,6 +86,95 @@ jobs:
             std::printf("Profile count: %u\n", count);
 
             e->Release();
+            return S_OK;
+          }
+
+          static void print_identity() {
+            CHAR user[256] = {};
+            DWORD user_len = ARRAYSIZE(user);
+            if (GetUserNameA(user, &user_len))
+              std::printf("User: %s\n", user);
+
+            HANDLE token = nullptr;
+            if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+              TOKEN_ELEVATION elevation = {};
+              DWORD size = 0;
+              if (GetTokenInformation(token, TokenElevation, &elevation,
+                                      sizeof(elevation), &size)) {
+                std::printf("Token elevated: %lu\n",
+                            static_cast<unsigned long>(elevation.TokenIsElevated));
+              }
+              CloseHandle(token);
+            }
+
+            SID_IDENTIFIER_AUTHORITY nt_authority = SECURITY_NT_AUTHORITY;
+            PSID admin_group = nullptr;
+            BOOL is_admin = FALSE;
+            if (AllocateAndInitializeSid(
+                    &nt_authority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+                    DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admin_group)) {
+              CheckTokenMembership(nullptr, admin_group, &is_admin);
+              FreeSid(admin_group);
+            }
+            std::printf("Admin token membership: %s\n", is_admin ? "yes" : "no");
+          }
+
+          static void print_registration_keys() {
+            const WCHAR* path =
+                L"Software\\Microsoft\\CTF\\TIP\\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}\\LanguageProfile\\0x00000404\\{3D02CAB6-2B8E-4781-BA20-1C9267529467}";
+            HKEY key = nullptr;
+            LSTATUS status = RegOpenKeyExW(HKEY_CURRENT_USER, path, 0, KEY_READ, &key);
+            std::printf("HKCU profile key status: %ld\n", static_cast<long>(status));
+            if (status == ERROR_SUCCESS)
+              RegCloseKey(key);
+
+            key = nullptr;
+            status = RegOpenKeyExW(HKEY_LOCAL_MACHINE, path, 0,
+                                   KEY_READ | KEY_WOW64_64KEY, &key);
+            std::printf("HKLM profile key status: %ld\n", static_cast<long>(status));
+            if (status == ERROR_SUCCESS)
+              RegCloseKey(key);
+          }
+
+          int wmain(int argc, wchar_t** argv) {
+            HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            if (FAILED(hr))
+              return 2;
+
+            ITfInputProcessorProfileMgr* mgr = nullptr;
+            hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+                                  CLSCTX_INPROC_SERVER,
+                                  IID_ITfInputProcessorProfileMgr,
+                                  reinterpret_cast<void**>(&mgr));
+            if (FAILED(hr)) {
+              std::printf("CoCreateInstance failed: 0x%08X\n",
+                          static_cast<unsigned>(hr));
+              CoUninitialize();
+              return 3;
+            }
+
+            if (argc > 1 && std::wcscmp(argv[1], L"register") == 0) {
+              print_identity();
+              std::puts("=== Registration keys before RegisterProfile ===");
+              print_registration_keys();
+
+              WCHAR icon_file[MAX_PATH] = {};
+              ULONG icon_len = GetModuleFileNameW(nullptr, icon_file,
+                                                  ARRAYSIZE(icon_file));
+              const WCHAR description[] = L"Weasel";
+              hr = mgr->RegisterProfile(
+                  kWeaselClsid, 0x0404, kWeaselProfile, description,
+                  (ARRAYSIZE(description) - 1) * sizeof(wchar_t), icon_file,
+                  icon_len, 0, nullptr, 0, TRUE, 0);
+              std::printf("RegisterProfile HRESULT: 0x%08X\n",
+                          static_cast<unsigned>(hr));
+
+              std::puts("=== Registration keys after RegisterProfile ===");
+              print_registration_keys();
+              std::puts("=== ProfileMgr after RegisterProfile ===");
+            }
+
+            dump_profiles(mgr);
             mgr->Release();
             CoUninitialize();
             return 0;
@@ -105,6 +184,41 @@ jobs:
           & cl.exe /nologo /EHsc $src /link ole32.lib uuid.lib /out:$exe
           if ($LASTEXITCODE -ne 0) {
             throw "Probe compile failed: $LASTEXITCODE"
+          }
+
+      - name: Probe RegisterProfile as a standard user
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testUser = 'tsfprobe'
+          $testPassword = 'TsfProbe!2026'
+          & net.exe user $testUser $testPassword /add /passwordchg:no
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to create standard test user: $LASTEXITCODE"
+          }
+
+          try {
+            $probe = 'C:\Users\Public\weasel-profile-probe.exe'
+            Copy-Item "$env:TEMP\weasel-profile-probe.exe" $probe -Force
+
+            $securePassword = ConvertTo-SecureString $testPassword -AsPlainText -Force
+            $credential = [PSCredential]::new("$env:COMPUTERNAME\$testUser", $securePassword)
+            $stdout = Join-Path $env:RUNNER_TEMP 'tsf-register-standard-user.out'
+            $stderr = Join-Path $env:RUNNER_TEMP 'tsf-register-standard-user.err'
+
+            $p = Start-Process -FilePath $probe -ArgumentList 'register' `
+              -Credential $credential -LoadUserProfile -Wait -PassThru `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            Write-Host "Standard-user probe exit code: $($p.ExitCode)"
+            Write-Host '=== Standard-user RegisterProfile stdout ==='
+            Get-Content $stdout
+            if ((Test-Path $stderr) -and (Get-Item $stderr).Length -gt 0) {
+              Write-Host '=== Standard-user RegisterProfile stderr ==='
+              Get-Content $stderr
+            }
+          }
+          finally {
+            & net.exe user $testUser /delete | Out-Null
           }
 
       - name: Install prebuilt per-user package
