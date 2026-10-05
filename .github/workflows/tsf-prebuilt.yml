@@ -311,6 +311,22 @@ jobs:
               Get-Content $stderr
             }
 
+            $profileRoot = "C:\Users\$testUser"
+            $localAppData = Join-Path $profileRoot 'AppData\Local'
+            $roamingAppData = Join-Path $profileRoot 'AppData\Roaming'
+            $userTemp = Join-Path $localAppData 'Temp'
+            New-Item -ItemType Directory -Path $userTemp -Force | Out-Null
+            $childEnvironment = @{
+              USERPROFILE = $profileRoot
+              LOCALAPPDATA = $localAppData
+              APPDATA = $roamingAppData
+              TEMP = $userTemp
+              TMP = $userTemp
+              USERNAME = $testUser
+              HOMEDRIVE = 'C:'
+              HOMEPATH = "\Users\$testUser"
+            }
+
             $installerSource = Get-ChildItem -Path prebuilt -Recurse -Filter '*-user-installer.exe' |
               Select-Object -First 1
             if (-not $installerSource) {
@@ -321,7 +337,7 @@ jobs:
 
             Write-Host '=== Run real per-user installer as standard user ==='
             $installProcess = Start-Process -FilePath $installer -ArgumentList @('/S','/T') `
-              -Credential $credential -LoadUserProfile -PassThru
+              -Credential $credential -LoadUserProfile -Environment $childEnvironment -PassThru
             if (-not $installProcess.WaitForExit(90000)) {
               Stop-Process -Id $installProcess.Id -Force -ErrorAction SilentlyContinue
               throw 'Standard-user per-user installer timed out.'
@@ -331,7 +347,7 @@ jobs:
             $inspectOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-after-install.out'
             $inspectErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-after-install.err'
             $inspectProcess = Start-Process -FilePath $probe -ArgumentList 'inspect' `
-              -Credential $credential -LoadUserProfile -Wait -PassThru `
+              -Credential $credential -LoadUserProfile -Environment $childEnvironment -Wait -PassThru `
               -RedirectStandardOutput $inspectOut -RedirectStandardError $inspectErr
             Write-Host "Standard-user inspect exit code: $($inspectProcess.ExitCode)"
             Write-Host '=== Standard-user state after real per-user install ==='
