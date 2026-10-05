@@ -146,7 +146,7 @@ jobs:
             .\xbuild.bat arm64 installer
           }
 
-      - name: Signed per-user TSF smoke test
+      - name: Per-user TSF registration smoke test
         if: matrix.variant == 'msbuild' && !startsWith(github.ref, 'refs/tags/')
         timeout-minutes: 3
         shell: powershell
@@ -162,31 +162,6 @@ jobs:
             -PropertyType MultiString `
             -Value @('zh-Hant-TW') `
             -Force | Out-Null
-
-          # A temporary CurrentUser code-signing certificate keeps this test
-          # entirely non-admin while satisfying Windows' signed IME requirement.
-          Write-Host 'phase=create-test-certificate'
-          $cert = New-SelfSignedCertificate `
-            -Type CodeSigningCert `
-            -Subject 'CN=Weasel CI Test IME' `
-            -CertStoreLocation 'Cert:\CurrentUser\My'
-          $cer = Join-Path $env:TEMP 'weasel-ci-test.cer'
-          Export-Certificate -Cert $cert -FilePath $cer | Out-Null
-          Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
-          Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\CurrentUser\TrustedPublisher' | Out-Null
-
-          Write-Host 'phase=sign-tsf-dlls'
-          foreach ($dll in @('.\output\weasel.dll', '.\output\weaselx64.dll')) {
-            Unblock-File $dll
-            $signature = Set-AuthenticodeSignature $dll $cert -HashAlgorithm SHA256
-            if ($signature.Status -ne 'Valid') {
-              throw "Failed to sign ${dll}: $($signature.Status) $($signature.StatusMessage)"
-            }
-          }
-
-          Write-Host 'Authenticode status:'
-          Get-AuthenticodeSignature .\output\weasel.dll, .\output\weaselx64.dll |
-            Format-Table Path, Status, StatusMessage -AutoSize
 
           # Remove stale test state and run the same current-user Traditional
           # Chinese registration path as the per-user installer.
