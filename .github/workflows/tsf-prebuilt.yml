@@ -193,6 +193,12 @@ jobs:
             std::printf("Activation ITfInputProcessorProfiles CoCreate HRESULT: 0x%08X\n",
                         static_cast<unsigned>(create_profiles));
             if (SUCCEEDED(create_profiles)) {
+              BOOL enabled = FALSE;
+              HRESULT is_enabled = profiles->IsEnabledLanguageProfile(
+                  kWeaselClsid, 0x0404, kWeaselProfile, &enabled);
+              std::printf("Weasel IsEnabledLanguageProfile HRESULT: 0x%08X enabled=%d\n",
+                          static_cast<unsigned>(is_enabled), enabled ? 1 : 0);
+
               HRESULT enable = profiles->EnableLanguageProfile(
                   kWeaselClsid, 0x0404, kWeaselProfile, TRUE);
               std::printf("EnableLanguageProfile HRESULT: 0x%08X\n",
@@ -201,8 +207,52 @@ jobs:
                   kWeaselClsid, 0x0404, kWeaselProfile, TRUE);
               std::printf("EnableLanguageProfileByDefault HRESULT: 0x%08X\n",
                           static_cast<unsigned>(enable_default));
+
+              HRESULT activate_language = profiles->ActivateLanguageProfile(
+                  kWeaselClsid, 0x0404, kWeaselProfile);
+              std::printf("Weasel ActivateLanguageProfile HRESULT: 0x%08X\n",
+                          static_cast<unsigned>(activate_language));
+
+              const GUID ms_bopomofo_clsid = {
+                  0xB115690A, 0xEA02, 0x48D5,
+                  {0xA2, 0x31, 0xE3, 0x57, 0x8D, 0x2F, 0xDF, 0x80}};
+              const GUID ms_bopomofo_profile = {
+                  0xB2F9C502, 0x1742, 0x11D4,
+                  {0x97, 0x90, 0x00, 0x80, 0xC8, 0x82, 0x68, 0x7E}};
+              BOOL control_enabled = FALSE;
+              HRESULT control_is_enabled = profiles->IsEnabledLanguageProfile(
+                  ms_bopomofo_clsid, 0x0404, ms_bopomofo_profile,
+                  &control_enabled);
+              std::printf("Bopomofo IsEnabledLanguageProfile HRESULT: 0x%08X enabled=%d\n",
+                          static_cast<unsigned>(control_is_enabled),
+                          control_enabled ? 1 : 0);
+              HRESULT control_activate = profiles->ActivateLanguageProfile(
+                  ms_bopomofo_clsid, 0x0404, ms_bopomofo_profile);
+              std::printf("Bopomofo ActivateLanguageProfile HRESULT: 0x%08X\n",
+                          static_cast<unsigned>(control_activate));
               profiles->Release();
             }
+
+            TF_INPUTPROCESSORPROFILE profile_info = {};
+            HRESULT get_weasel = mgr->GetProfile(
+                TF_PROFILETYPE_INPUTPROCESSOR, 0x0404, kWeaselClsid,
+                kWeaselProfile, nullptr, &profile_info);
+            std::printf("Weasel ProfileMgr GetProfile HRESULT: 0x%08X\n",
+                        static_cast<unsigned>(get_weasel));
+            HRESULT activate_weasel = mgr->ActivateProfile(
+                TF_PROFILETYPE_INPUTPROCESSOR, 0x0404, kWeaselClsid,
+                kWeaselProfile, nullptr, TF_IPPMF_FORSESSION);
+            std::printf("Weasel ProfileMgr ActivateProfile HRESULT: 0x%08X\n",
+                        static_cast<unsigned>(activate_weasel));
+
+            IUnknown* weasel_object = nullptr;
+            HRESULT cocreate_weasel = CoCreateInstance(
+                kWeaselClsid, nullptr, CLSCTX_INPROC_SERVER, IID_IUnknown,
+                reinterpret_cast<void**>(&weasel_object));
+            std::printf("Weasel COM CoCreateInstance HRESULT: 0x%08X\n",
+                        static_cast<unsigned>(cocreate_weasel));
+            if (weasel_object)
+              weasel_object->Release();
 
             std::puts("=== ProfileMgr after EnableLanguageProfile ===");
             dump_profiles(mgr);
@@ -243,6 +293,12 @@ jobs:
                 std::printf("InstallLayoutOrTipUserReg(default roots) result: %d last_error=%lu\n",
                             installed_user_reg ? 1 : 0,
                             static_cast<unsigned long>(GetLastError()));
+              }
+              if (query_layout_or_tip_user_reg) {
+                HRESULT valid_after_user_reg = query_layout_or_tip_user_reg(
+                    nullptr, nullptr, nullptr, tip, 0);
+                std::printf("QueryLayoutOrTipStringUserReg(after install) HRESULT: 0x%08X\n",
+                            static_cast<unsigned>(valid_after_user_reg));
               }
               if (install_layout_or_tip) {
                 BOOL installed = install_layout_or_tip(tip, 0);
@@ -422,6 +478,14 @@ jobs:
               Get-Content $seedLanguageErr
             }
 
+            $seedInspectOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-after-language-seed.out'
+            $seedInspectErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-after-language-seed.err'
+            $seedInspectProcess = Start-Process -FilePath $probe -ArgumentList 'inspect' `
+              -Credential $credential -LoadUserProfile -Environment $childEnvironment -Wait -PassThru `
+              -RedirectStandardOutput $seedInspectOut -RedirectStandardError $seedInspectErr
+            Write-Host '=== Standard-user TSF state before Weasel install ==='
+            Get-Content $seedInspectOut
+
             $installerSource = Get-ChildItem -Path prebuilt -Recurse -Filter '*-user-installer.exe' |
               Select-Object -First 1
             if (-not $installerSource) {
@@ -452,6 +516,18 @@ jobs:
               Get-Content $inspectErr
             }
 
+            $postInstallLanguageOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-language-after-install.out'
+            $postInstallLanguageErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-language-after-install.err'
+            $languageCommand = 'Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }'
+            $encodedLanguageCommand = [Convert]::ToBase64String(
+              [Text.Encoding]::Unicode.GetBytes($languageCommand))
+            $postInstallLanguageProcess = Start-Process -FilePath 'powershell.exe' `
+              -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encodedLanguageCommand) `
+              -Credential $credential -LoadUserProfile -Environment $childEnvironment -Wait -PassThru `
+              -RedirectStandardOutput $postInstallLanguageOut -RedirectStandardError $postInstallLanguageErr
+            Write-Host '=== Standard-user language list immediately after Weasel install ==='
+            Get-Content $postInstallLanguageOut
+
             $activateOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-activation.out'
             $activateErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-activation.err'
             $activateProcess = Start-Process -FilePath $probe -ArgumentList 'activate' `
@@ -467,9 +543,6 @@ jobs:
 
             $languageOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-language-list.out'
             $languageErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-language-list.err'
-            $languageCommand = 'Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }'
-            $encodedLanguageCommand = [Convert]::ToBase64String(
-              [Text.Encoding]::Unicode.GetBytes($languageCommand))
             $languageProcess = Start-Process -FilePath 'powershell.exe' `
               -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encodedLanguageCommand) `
               -Credential $credential -LoadUserProfile -Environment $childEnvironment -Wait -PassThru `
