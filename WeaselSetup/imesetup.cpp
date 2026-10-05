@@ -256,9 +256,37 @@ static bool update_user_profile_input_method(const std::wstring& profile,
 
   bool ok = false;
   if (add) {
-    ok = write_reg_string(key, tip.c_str(), L"2");
-    TraceRegistration(L"User Profile add path=%s value=%s success=%d",
-                      user_profile.c_str(), tip.c_str(), ok);
+    DWORD order = 1;
+    DWORD type = 0;
+    DWORD size = sizeof(order);
+    if (RegQueryValueExW(key, tip.c_str(), NULL, &type,
+                         reinterpret_cast<LPBYTE>(&order),
+                         &size) != ERROR_SUCCESS ||
+        type != REG_DWORD || order == 0) {
+      DWORD max_order = 0;
+      for (DWORD index = 0;; ++index) {
+        WCHAR name[512] = {};
+        DWORD name_size = _countof(name);
+        DWORD value = 0;
+        DWORD value_size = sizeof(value);
+        type = 0;
+        const LSTATUS enum_status =
+            RegEnumValueW(key, index, name, &name_size, NULL, &type,
+                          reinterpret_cast<LPBYTE>(&value), &value_size);
+        if (enum_status == ERROR_NO_MORE_ITEMS)
+          break;
+        if (enum_status == ERROR_SUCCESS && type == REG_DWORD &&
+            value_size == sizeof(value) && value > max_order)
+          max_order = value;
+      }
+      order = max_order + 1;
+    }
+
+    ok = RegSetValueExW(key, tip.c_str(), 0, REG_DWORD,
+                        reinterpret_cast<const BYTE*>(&order),
+                        sizeof(order)) == ERROR_SUCCESS;
+    TraceRegistration(L"User Profile add path=%s value=%s order=%lu success=%d",
+                      user_profile.c_str(), tip.c_str(), order, ok);
   } else {
     status = RegDeleteValueW(key, tip.c_str());
     ok = status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND;
