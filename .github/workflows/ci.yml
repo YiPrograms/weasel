@@ -570,6 +570,46 @@ jobs:
             $fullMachineTsfProbeExit = $LASTEXITCODE
             Write-Host "Full machine TSF API probe exit code: $fullMachineTsfProbeExit"
             $global:LASTEXITCODE = 0
+
+            Write-Host 'phase=dump-machine-tip-registry'
+            $machineTip = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}'
+            if (Test-Path $machineTip) {
+              Get-ChildItem -Path $machineTip -Recurse | ForEach-Object {
+                Write-Host "REGKEY $($_.Name)"
+                try {
+                  $props = Get-ItemProperty -Path $_.PSPath
+                  $props.PSObject.Properties |
+                    Where-Object { $_.Name -notlike 'PS*' } |
+                    ForEach-Object {
+                      Write-Host ("  {0} ({1}) = {2}" -f $_.Name, $_.TypeNameOfValue, $_.Value)
+                    }
+                } catch {
+                  Write-Host "  <read failed: $($_.Exception.Message)>"
+                }
+              }
+            } else {
+              Write-Host 'Machine TIP registry key is absent.'
+            }
+
+            Write-Host 'phase=dump-user-tip-registry'
+            $userTip = 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}'
+            if (Test-Path $userTip) {
+              Get-ChildItem -Path $userTip -Recurse | ForEach-Object {
+                Write-Host "USERREGKEY $($_.Name)"
+                try {
+                  $props = Get-ItemProperty -Path $_.PSPath
+                  $props.PSObject.Properties |
+                    Where-Object { $_.Name -notlike 'PS*' } |
+                    ForEach-Object {
+                      Write-Host ("  {0} ({1}) = {2}" -f $_.Name, $_.TypeNameOfValue, $_.Value)
+                    }
+                } catch {
+                  Write-Host "  <read failed: $($_.Exception.Message)>"
+                }
+              }
+            } else {
+              Write-Host 'User TIP registry key is absent.'
+            }
           } else {
             Write-Warning 'Full machine install control failed.'
           }
