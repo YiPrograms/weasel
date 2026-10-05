@@ -148,7 +148,10 @@ jobs:
 
       - name: Signed per-user TSF smoke test
         if: matrix.variant == 'msbuild' && !startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
+        # The International module's WinUserLanguageList cmdlets are reliable
+        # in Windows PowerShell 5.1, but fail to marshal correctly in pwsh 7
+        # on the GitHub Windows runner.
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
 
