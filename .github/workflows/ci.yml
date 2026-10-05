@@ -6,7 +6,11 @@ on:
       - '*'
     tags:
       - '[0-9]+.*'
+    paths-ignore:
+      - '.github/workflows/tsf-prebuilt.yml'
   pull_request:
+    paths-ignore:
+      - '.github/workflows/tsf-prebuilt.yml'
   workflow_dispatch:
 
 jobs:
