@@ -317,6 +317,9 @@ jobs:
           & $probeExe
           $unsignedTsfProbeExit = $LASTEXITCODE
           Write-Host "Unsigned TSF API probe exit code: $unsignedTsfProbeExit"
+          # Not finding the unsigned profile is an expected comparison result,
+          # not a reason to skip the signed half of the A/B test.
+          $global:LASTEXITCODE = 0
 
           if (Test-Path "$env:TEMP\weasel-register.log") {
             Write-Host 'Unsigned registration trace:'
