@@ -170,7 +170,7 @@ jobs:
           Write-Host 'phase=unsigned-check-signatures'
           foreach ($dll in @('.\output\weasel.dll', '.\output\weaselx64.dll')) {
             $signature = Get-AuthenticodeSignature $dll
-            Write-Host "Unsigned baseline signature $dll: $($signature.Status)"
+            Write-Host "Unsigned baseline signature ${dll}: $($signature.Status)"
             if ($signature.Status -eq 'Valid') {
               throw "Unsigned baseline is unexpectedly signed: $dll"
             }
