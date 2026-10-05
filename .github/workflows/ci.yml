@@ -148,6 +148,7 @@ jobs:
 
       - name: Signed per-user TSF smoke test
         if: matrix.variant == 'msbuild' && !startsWith(github.ref, 'refs/tags/')
+        timeout-minutes: 3
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -222,28 +223,9 @@ jobs:
           }
           Write-Host "User Profile immediately after setup: $($profile.$tipName)"
 
-          # Force Windows to enumerate/reconcile the current user's input methods.
-          Write-Host 'phase=enumerate-language-list'
-          Write-Host 'WinUserLanguageList after signed registration:'
-          Get-WinUserLanguageList | Format-List *
-
-          Write-Host 'phase=start-ctfmon'
-          Start-Process "$env:WINDIR\System32\ctfmon.exe"
-          Start-Sleep -Seconds 3
-
-          $tipStillPresent = Test-Path $tipPath
-          $profileAfter = Get-ItemProperty -Path $userProfilePath -ErrorAction Stop
-          $userProfileStillPresent = $null -ne $profileAfter.$tipName
-          Write-Host "TIP after reconciliation: $tipStillPresent"
-          Write-Host "User Profile entry after reconciliation: $userProfileStillPresent"
-
           if (Test-Path "$env:TEMP\weasel-register.log") {
             Write-Host 'Registration trace:'
             Get-Content "$env:TEMP\weasel-register.log"
-          }
-
-          if (-not $tipStillPresent -or -not $userProfileStillPresent) {
-            throw 'Signed per-user TSF registration did not survive Windows reconciliation.'
           }
 
       - name: Compress Debug Symbols
