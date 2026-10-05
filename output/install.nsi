@@ -262,6 +262,10 @@ program_files:
   File "rime-install-config.bat"
   File "start_service.bat"
   File "stop_service.bat"
+!ifdef PER_USER
+  File "repair-user-ime.ps1"
+  File "repair-user-ime.cmd"
+!endif
   File "weasel.dll"
   ${If} ${RunningX64}
     File "weaselx64.dll"
@@ -408,6 +412,7 @@ Section "Start Menu Shortcuts"
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORUPDATER).lnk" "$INSTDIR\WeaselServer.exe" "/update" "$SYSDIR\shell32.dll" 13
 !ifdef PER_USER
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORSETUP).lnk" "$INSTDIR\WeaselSetup.exe" "/user" "$SYSDIR\shell32.dll" 162
+  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\Repair current-user IME.lnk" "$INSTDIR\repair-user-ime.cmd" "" "$SYSDIR\shell32.dll" 162
 !else
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORSETUP).lnk" "$INSTDIR\WeaselSetup.exe" "" "$SYSDIR\shell32.dll" 162
 !endif

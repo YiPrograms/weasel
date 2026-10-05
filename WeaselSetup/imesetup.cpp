@@ -218,6 +218,58 @@ static bool write_reg_string(HKEY key,
          ERROR_SUCCESS;
 }
 
+static std::wstring profile_to_language_tag(const std::wstring& profile) {
+  if (profile == L"hant")
+    return L"zh-Hant-TW";
+  if (profile == L"hongkong")
+    return L"zh-Hant-HK";
+  if (profile == L"macau")
+    return L"zh-Hant-MO";
+  if (profile == L"singapore")
+    return L"zh-Hans-SG";
+  return L"zh-Hans-CN";
+}
+
+static bool update_user_profile_input_method(const std::wstring& profile,
+                                             bool add) {
+  const std::wstring user_profile =
+      L"Control Panel\\International\\User Profile\\" +
+      profile_to_language_tag(profile);
+  const std::wstring tip = profile_to_title(profile);
+
+  HKEY key = NULL;
+  DWORD disposition = 0;
+  LSTATUS status =
+      add ? RegCreateKeyExW(HKEY_CURRENT_USER, user_profile.c_str(), 0, NULL,
+                            REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &key,
+                            &disposition)
+          : RegOpenKeyExW(HKEY_CURRENT_USER, user_profile.c_str(), 0,
+                          KEY_SET_VALUE, &key);
+
+  if (status == ERROR_FILE_NOT_FOUND && !add)
+    return true;
+  if (status != ERROR_SUCCESS) {
+    TraceRegistration(L"User Profile open status=%ld path=%s", status,
+                      user_profile.c_str());
+    return false;
+  }
+
+  bool ok = false;
+  if (add) {
+    ok = write_reg_string(key, tip.c_str(), L"2");
+    TraceRegistration(L"User Profile add path=%s value=%s success=%d",
+                      user_profile.c_str(), tip.c_str(), ok);
+  } else {
+    status = RegDeleteValueW(key, tip.c_str());
+    ok = status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND;
+    TraceRegistration(L"User Profile remove status=%ld path=%s value=%s",
+                      status, user_profile.c_str(), tip.c_str());
+  }
+
+  RegCloseKey(key);
+  return ok;
+}
+
 static bool update_user_input_method(const std::wstring& profile, bool add) {
   WCHAR clsid[64] = {};
   WCHAR profile_guid[64] = {};
@@ -286,14 +338,14 @@ static bool update_user_input_method(const std::wstring& profile, bool add) {
         ok = false;
     }
     RegCloseKey(base_key);
-    return ok;
+    return update_user_profile_input_method(profile, false) && ok;
   }
 
   if (!matching_slots.empty()) {
     TraceRegistration(L"SortOrder already present slot=%s",
                       matching_slots.front().c_str());
     RegCloseKey(base_key);
-    return true;
+    return update_user_profile_input_method(profile, true);
   }
 
   if (first_free == 0xFFFFFFFF) {
@@ -323,7 +375,8 @@ static bool update_user_input_method(const std::wstring& profile, bool add) {
                     ok && layout_ok);
   RegCloseKey(slot_key);
   RegCloseKey(base_key);
-  return ok && layout_ok;
+
+  return ok && layout_ok && update_user_profile_input_method(profile, true);
 }
 
 int install_ime_file(std::wstring& srcPath,
