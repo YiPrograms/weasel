@@ -241,7 +241,8 @@ static bool update_user_profile_input_method(const std::wstring& profile,
   DWORD disposition = 0;
   LSTATUS status =
       add ? RegCreateKeyExW(HKEY_CURRENT_USER, user_profile.c_str(), 0, NULL,
-                            REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &key,
+                            REG_OPTION_NON_VOLATILE,
+                            KEY_QUERY_VALUE | KEY_SET_VALUE, NULL, &key,
                             &disposition)
           : RegOpenKeyExW(HKEY_CURRENT_USER, user_profile.c_str(), 0,
                           KEY_SET_VALUE, &key);
@@ -275,6 +276,13 @@ static bool update_user_profile_input_method(const std::wstring& profile,
                           reinterpret_cast<LPBYTE>(&value), &value_size);
         if (enum_status == ERROR_NO_MORE_ITEMS)
           break;
+        if (enum_status != ERROR_SUCCESS && enum_status != ERROR_MORE_DATA) {
+          TraceRegistration(
+              L"User Profile enumerate failed status=%ld index=%lu",
+              enum_status, index);
+          RegCloseKey(key);
+          return false;
+        }
         if (enum_status == ERROR_SUCCESS && type == REG_DWORD &&
             value_size == sizeof(value) && value > max_order)
           max_order = value;
