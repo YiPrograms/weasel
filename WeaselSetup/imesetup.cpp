@@ -726,7 +726,21 @@ int register_text_service(const std::wstring& tsf_path,
   shExInfo.nShow = SW_SHOW;
   shExInfo.hInstApp = 0;
   if (ShellExecuteExW(&shExInfo)) {
-    WaitForSingleObject(shExInfo.hProcess, INFINITE);
+    TraceRegistration(L"regsvr32 wait begin path=%s", tsf_path.c_str());
+    const DWORD wait_result = WaitForSingleObject(shExInfo.hProcess, 60000);
+    if (wait_result == WAIT_TIMEOUT) {
+      TraceRegistration(L"regsvr32 timeout path=%s", tsf_path.c_str());
+      TerminateProcess(shExInfo.hProcess, ERROR_TIMEOUT);
+      WaitForSingleObject(shExInfo.hProcess, 5000);
+      CloseHandle(shExInfo.hProcess);
+      return 1;
+    }
+    if (wait_result != WAIT_OBJECT_0) {
+      TraceRegistration(L"regsvr32 wait failed path=%s result=%lu",
+                        tsf_path.c_str(), wait_result);
+      CloseHandle(shExInfo.hProcess);
+      return 1;
+    }
     DWORD exit_code = 1;
     GetExitCodeProcess(shExInfo.hProcess, &exit_code);
     CloseHandle(shExInfo.hProcess);
@@ -761,10 +775,16 @@ int install(const std::wstring& profile, bool silent, bool per_user) {
       DeleteFileW(trace_path);
   }
 
+  TraceRegistration(L"install begin profile=%s silent=%d per_user=%d",
+                    profile.c_str(), silent, per_user);
+  TraceRegistration(L"install phase=register_text_service begin");
   retval += install_ime_file(ime_src_path, L".dll", profile, silent, per_user,
                              &register_text_service);
+  TraceRegistration(L"install phase=register_text_service end retval=%d",
+                    retval);
 
   // 写注册表
+  TraceRegistration(L"install phase=weasel_registry begin");
   WCHAR drive[_MAX_DRIVE];
   WCHAR dir[_MAX_DIR];
   _wsplitpath_s(ime_src_path.c_str(), drive, _countof(drive), dir,
@@ -805,6 +825,7 @@ int install(const std::wstring& profile, bool silent, bool per_user) {
                           IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
     return 1;
   }
+  TraceRegistration(L"install phase=weasel_registry end");
 
   // Enable the installed profile for the current user.
   HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
@@ -837,8 +858,14 @@ int install(const std::wstring& profile, bool silent, bool per_user) {
   if (retval)
     return 1;
 
-  if (per_user && !update_user_input_method(profile, true))
-    return 1;
+  if (per_user) {
+    TraceRegistration(L"install phase=user_input_method begin");
+    if (!update_user_input_method(profile, true)) {
+      TraceRegistration(L"install phase=user_input_method failed");
+      return 1;
+    }
+    TraceRegistration(L"install phase=user_input_method end");
+  }
 
   TraceRegistration(L"install completed profile=%s per_user=%d",
                     profile.c_str(), per_user);
