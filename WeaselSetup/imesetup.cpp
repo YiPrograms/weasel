@@ -313,12 +313,17 @@ static bool update_user_input_method(const std::wstring& profile, bool add) {
   }
 
   const bool ok = write_reg_string(slot_key, L"CLSID", clsid) &&
-                  write_reg_string(slot_key, L"Profile", profile_guid) &&
-                  write_reg_string(slot_key, L"KeyboardLayout", L"0");
-  TraceRegistration(L"SortOrder add slot=%s success=%d", slot_name, ok);
+                  write_reg_string(slot_key, L"Profile", profile_guid);
+  const DWORD keyboard_layout = 0;
+  const bool layout_ok =
+      RegSetValueExW(slot_key, L"KeyboardLayout", 0, REG_DWORD,
+                     reinterpret_cast<const BYTE*>(&keyboard_layout),
+                     sizeof(keyboard_layout)) == ERROR_SUCCESS;
+  TraceRegistration(L"SortOrder add slot=%s success=%d", slot_name,
+                    ok && layout_ok);
   RegCloseKey(slot_key);
   RegCloseKey(base_key);
-  return ok;
+  return ok && layout_ok;
 }
 
 int install_ime_file(std::wstring& srcPath,
