@@ -141,6 +141,16 @@ jobs:
 
           Write-Host '=== ProfileMgr before machine install ==='
           & "$env:TEMP\weasel-profile-probe.exe"
+          $global:LASTEXITCODE = 0
+
+          Write-Host '=== Add RegisterProfile metadata to HKCU ==='
+          $profileKey = 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}\LanguageProfile\0x00000404\{3D02CAB6-2B8E-4781-BA20-1C9267529467}'
+          New-ItemProperty -Path $profileKey -Name 'HiddenInSettingUI' -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path $profileKey -Name 'SubItemInSettingUI' -PropertyType DWord -Value 0 -Force | Out-Null
+
+          Write-Host '=== ProfileMgr after HKCU metadata patch ==='
+          & "$env:TEMP\weasel-profile-probe.exe"
+          $global:LASTEXITCODE = 0
 
 
       - name: Patch HKCU profile metadata to match machine registration
@@ -192,7 +202,13 @@ jobs:
           & "$env:TEMP\weasel-profile-probe.exe"
 
           Write-Host '=== HKCU TIP after machine install ==='
-          & reg.exe query 'HKCU\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}' /s /reg:64
+          $userTip = 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}'
+          if (Test-Path $userTip) {
+            & reg.exe query 'HKCU\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}' /s /reg:64
+          } else {
+            Write-Host 'HKCU TIP is absent after machine install.'
+          }
+          $global:LASTEXITCODE = 0
           if ($LASTEXITCODE -ne 0) {
             Write-Host 'HKCU TIP is absent after full machine install (expected/diagnostic).'
           }
