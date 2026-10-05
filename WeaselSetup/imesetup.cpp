@@ -528,7 +528,7 @@ int register_text_service(const std::wstring& tsf_path,
     return 1;
   }
 
-  if (register_ime)
+  if (register_ime && !per_user)
     enable_profile(TRUE, profile, per_user);
 
   return 0;
@@ -596,16 +596,7 @@ int install(const std::wstring& profile, bool silent, bool per_user) {
   if (hInputDLL) {
     std::wstring title = profile_to_title(profile);
     if (!title.empty()) {
-      if (per_user) {
-        auto pfnInstallLayoutOrTipUserReg =
-            (PTF_INSTALLLAYOUTORTIPUSERREG)GetProcAddress(
-                hInputDLL, "InstallLayoutOrTipUserReg");
-        if (pfnInstallLayoutOrTipUserReg &&
-            override_machine_registry_for_current_user(true)) {
-          (*pfnInstallLayoutOrTipUserReg)(NULL, NULL, NULL, title.c_str(), 0);
-          override_machine_registry_for_current_user(false);
-        }
-      } else {
+      if (!per_user) {
         auto pfnInstallLayoutOrTip = (PTF_INSTALLLAYOUTORTIP)GetProcAddress(
             hInputDLL, "InstallLayoutOrTip");
         if (pfnInstallLayoutOrTip)
