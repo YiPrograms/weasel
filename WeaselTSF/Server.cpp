@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include <cstdarg>
+#include <strsafe.h>
 
 #include "Globals.h"
 #include "Register.h"
