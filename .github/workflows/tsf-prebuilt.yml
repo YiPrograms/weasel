@@ -169,7 +169,19 @@ jobs:
               return 3;
             }
 
-            if (argc > 1 && std::wcscmp(argv[1], L"register") == 0) {
+            const bool register_mode =
+                argc > 1 && std::wcscmp(argv[1], L"register") == 0;
+            const bool inspect_mode =
+                argc > 1 && std::wcscmp(argv[1], L"inspect") == 0;
+
+            if (inspect_mode) {
+              print_identity();
+              std::puts("=== Registration keys in current user ===");
+              print_registration_keys();
+              std::puts("=== ProfileMgr in current user ===");
+            }
+
+            if (register_mode) {
               print_identity();
               std::puts("=== Registration keys before TSF registration ===");
               print_registration_keys();
@@ -236,7 +248,7 @@ jobs:
             throw "Probe compile failed: $LASTEXITCODE"
           }
 
-      - name: Probe RegisterProfile as a standard user
+      - name: Probe TSF registration and real installer as a standard user
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -263,6 +275,36 @@ jobs:
             if ((Test-Path $stderr) -and (Get-Item $stderr).Length -gt 0) {
               Write-Host '=== Standard-user RegisterProfile stderr ==='
               Get-Content $stderr
+            }
+
+            $installerSource = Get-ChildItem -Path prebuilt -Recurse -Filter '*-user-installer.exe' |
+              Select-Object -First 1
+            if (-not $installerSource) {
+              throw 'Per-user installer not found in prebuilt artifact.'
+            }
+            $installer = 'C:\Users\Public\weasel-user-installer.exe'
+            Copy-Item $installerSource.FullName $installer -Force
+
+            Write-Host '=== Run real per-user installer as standard user ==='
+            $installProcess = Start-Process -FilePath $installer -ArgumentList @('/S','/T') `
+              -Credential $credential -LoadUserProfile -PassThru
+            if (-not $installProcess.WaitForExit(90000)) {
+              Stop-Process -Id $installProcess.Id -Force -ErrorAction SilentlyContinue
+              throw 'Standard-user per-user installer timed out.'
+            }
+            Write-Host "Standard-user installer exit code: $($installProcess.ExitCode)"
+
+            $inspectOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-after-install.out'
+            $inspectErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-after-install.err'
+            $inspectProcess = Start-Process -FilePath $probe -ArgumentList 'inspect' `
+              -Credential $credential -LoadUserProfile -Wait -PassThru `
+              -RedirectStandardOutput $inspectOut -RedirectStandardError $inspectErr
+            Write-Host "Standard-user inspect exit code: $($inspectProcess.ExitCode)"
+            Write-Host '=== Standard-user state after real per-user install ==='
+            Get-Content $inspectOut
+            if ((Test-Path $inspectErr) -and (Get-Item $inspectErr).Length -gt 0) {
+              Write-Host '=== Standard-user inspect stderr ==='
+              Get-Content $inspectErr
             }
           }
           finally {
