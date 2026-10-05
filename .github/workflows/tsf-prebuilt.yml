@@ -378,6 +378,27 @@ jobs:
               HOMEPATH = "\Users\$testUser"
             }
 
+            $seedLanguageOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-seed-language.out'
+            $seedLanguageErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-seed-language.err'
+            $seedLanguageCommand = @'
+            $list = New-WinUserLanguageList 'zh-Hant-TW'
+            Set-WinUserLanguageList $list -Force
+            Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }
+            '@
+            $encodedSeedLanguageCommand = [Convert]::ToBase64String(
+              [Text.Encoding]::Unicode.GetBytes($seedLanguageCommand))
+            $seedLanguageProcess = Start-Process -FilePath 'powershell.exe' `
+              -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encodedSeedLanguageCommand) `
+              -Credential $credential -LoadUserProfile -Environment $childEnvironment -Wait -PassThru `
+              -RedirectStandardOutput $seedLanguageOut -RedirectStandardError $seedLanguageErr
+            Write-Host "Seed zh-Hant-TW exit code: $($seedLanguageProcess.ExitCode)"
+            Write-Host '=== Standard-user language list before Weasel install ==='
+            Get-Content $seedLanguageOut
+            if ((Test-Path $seedLanguageErr) -and (Get-Item $seedLanguageErr).Length -gt 0) {
+              Write-Host '=== Standard-user seed-language stderr ==='
+              Get-Content $seedLanguageErr
+            }
+
             $installerSource = Get-ChildItem -Path prebuilt -Recurse -Filter '*-user-installer.exe' |
               Select-Object -First 1
             if (-not $installerSource) {
