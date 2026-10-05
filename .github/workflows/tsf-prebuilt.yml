@@ -1,0 +1,178 @@
+name: TSF prebuilt experiment
+
+on:
+  push:
+    branches:
+      - per-user-install
+    paths:
+      - '.github/workflows/tsf-prebuilt.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  tsf:
+    runs-on: windows-2022
+    timeout-minutes: 8
+
+    steps:
+      - name: Download prebuilt installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          repository: YiPrograms/weasel
+          run-id: 37346844122
+          name: weasel-artifact-0.17.4.0.50ecac0
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: prebuilt
+
+      - name: Show prebuilt files
+        shell: pwsh
+        run: Get-ChildItem -Path prebuilt -Recurse | Select-Object FullName,Length
+
+      - name: Set up MSVC for tiny TSF probe
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Compile ProfileMgr probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Join-Path $env:TEMP 'weasel-profile-probe.cpp'
+          $exe = Join-Path $env:TEMP 'weasel-profile-probe.exe'
+          @'
+          #include <windows.h>
+          #include <msctf.h>
+          #include <cstdio>
+
+          static void print_guid(const GUID& g) {
+            std::printf(
+                "{%08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX}",
+                g.Data1, g.Data2, g.Data3,
+                g.Data4[0], g.Data4[1], g.Data4[2], g.Data4[3],
+                g.Data4[4], g.Data4[5], g.Data4[6], g.Data4[7]);
+          }
+
+          int wmain() {
+            HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            if (FAILED(hr))
+              return 2;
+
+            ITfInputProcessorProfileMgr* mgr = nullptr;
+            hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+                                  CLSCTX_INPROC_SERVER,
+                                  IID_ITfInputProcessorProfileMgr,
+                                  reinterpret_cast<void**>(&mgr));
+            if (FAILED(hr)) {
+              std::printf("CoCreateInstance failed: 0x%08X\n",
+                          static_cast<unsigned>(hr));
+              CoUninitialize();
+              return 3;
+            }
+
+            IEnumTfInputProcessorProfiles* e = nullptr;
+            hr = mgr->EnumProfiles(0x0404, &e);
+            if (FAILED(hr)) {
+              std::printf("EnumProfiles failed: 0x%08X\n",
+                          static_cast<unsigned>(hr));
+              mgr->Release();
+              CoUninitialize();
+              return 4;
+            }
+
+            unsigned count = 0;
+            TF_INPUTPROCESSORPROFILE item = {};
+            ULONG fetched = 0;
+            while (e->Next(1, &item, &fetched) == S_OK) {
+              ++count;
+              std::printf("Profile[%u] type=%lu langid=0x%04X clsid=",
+                          count, item.dwProfileType, item.langid);
+              print_guid(item.clsid);
+              std::printf(" profile=");
+              print_guid(item.guidProfile);
+              std::printf(" flags=0x%08lX hkl=0x%p\n",
+                          item.dwFlags, item.hkl);
+            }
+            std::printf("Profile count: %u\n", count);
+
+            e->Release();
+            mgr->Release();
+            CoUninitialize();
+            return 0;
+          }
+          '@ | Set-Content -Path $src -Encoding ascii
+
+          & cl.exe /nologo /EHsc $src /link ole32.lib uuid.lib /out:$exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Probe compile failed: $LASTEXITCODE"
+          }
+
+      - name: Install prebuilt per-user package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Get-ChildItem -Path prebuilt -Recurse -Filter '*-user-installer.exe' |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw 'Per-user installer not found in prebuilt artifact.'
+          }
+          Write-Host "Installer: $($installer.FullName)"
+          $p = Start-Process -FilePath $installer.FullName -ArgumentList @('/S','/T') -PassThru
+          if (-not $p.WaitForExit(90000)) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw 'Per-user installer timed out.'
+          }
+          Write-Host "Per-user installer exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) {
+            throw "Per-user installer failed: $($p.ExitCode)"
+          }
+
+      - name: Inspect per-user TSF state
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '=== Get-WinUserLanguageList ==='
+          powershell.exe -NoProfile -Command 'Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }'
+
+          Write-Host '=== HKCU TIP 64-bit view ==='
+          & reg.exe query 'HKCU\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}' /s /reg:64
+          Write-Host '=== HKCU TIP 32-bit view ==='
+          & reg.exe query 'HKCU\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}' /s /reg:32
+
+          Write-Host '=== ProfileMgr before machine install ==='
+          & "$env:TEMP\weasel-profile-probe.exe"
+
+      - name: Full machine-install control using prebuilt files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = (Get-ItemProperty 'HKCU:\Software\Rime\Weasel').WeaselRoot
+          $setup = Join-Path $root 'WeaselSetup.exe'
+          if (-not (Test-Path $setup)) {
+            throw "WeaselSetup.exe not found under $root"
+          }
+          Write-Host "Machine control setup: $setup"
+          $p = Start-Process -FilePath $setup -ArgumentList @('/t') -PassThru
+          if (-not $p.WaitForExit(90000)) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw 'Machine WeaselSetup /t timed out.'
+          }
+          Write-Host "Machine WeaselSetup exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) {
+            throw "Machine WeaselSetup failed: $($p.ExitCode)"
+          }
+
+      - name: Inspect machine TSF state
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '=== HKLM TIP 64-bit view ==='
+          & reg.exe query 'HKLM\SOFTWARE\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}' /s /reg:64
+          Write-Host '=== HKLM TIP 32-bit view ==='
+          & reg.exe query 'HKLM\SOFTWARE\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}' /s /reg:32
+
+          Write-Host '=== ProfileMgr after full machine install ==='
+          & "$env:TEMP\weasel-profile-probe.exe"
+
+          Write-Host '=== HKCU TIP after machine install ==='
+          & reg.exe query 'HKCU\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}' /s /reg:64
