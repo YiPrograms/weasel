@@ -301,6 +301,25 @@ jobs:
             ULONG fetched = 0;
             while (enumerator->Next(1, &item, &fetched) == S_OK) {
               ++count;
+              std::printf(
+                  "Profile[%u] type=%lu langid=0x%04X "
+                  "clsid={%08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX} "
+                  "profile={%08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX} "
+                  "flags=0x%08lX\n",
+                  count,
+                  item.dwProfileType,
+                  item.langid,
+                  item.clsid.Data1, item.clsid.Data2, item.clsid.Data3,
+                  item.clsid.Data4[0], item.clsid.Data4[1], item.clsid.Data4[2],
+                  item.clsid.Data4[3], item.clsid.Data4[4], item.clsid.Data4[5],
+                  item.clsid.Data4[6], item.clsid.Data4[7],
+                  item.guidProfile.Data1, item.guidProfile.Data2,
+                  item.guidProfile.Data3, item.guidProfile.Data4[0],
+                  item.guidProfile.Data4[1], item.guidProfile.Data4[2],
+                  item.guidProfile.Data4[3], item.guidProfile.Data4[4],
+                  item.guidProfile.Data4[5], item.guidProfile.Data4[6],
+                  item.guidProfile.Data4[7],
+                  item.dwFlags);
               if (item.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR &&
                   IsEqualGUID(item.clsid, weasel) &&
                   IsEqualGUID(item.guidProfile, profile)) {
