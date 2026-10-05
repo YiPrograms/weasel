@@ -286,7 +286,7 @@ jobs:
           $probeOut = Join-Path $env:TEMP 'weasel-language-list.txt'
           $probeErr = Join-Path $env:TEMP 'weasel-language-list.err.txt'
           $probeCommand = @"
-          Get-WinUserLanguageList | Format-List * | Out-File -Encoding utf8 '$probeOut'
+          Get-WinUserLanguageList | Format-List *
           "@
           $encodedProbe = [Convert]::ToBase64String(
             [Text.Encoding]::Unicode.GetBytes($probeCommand)
