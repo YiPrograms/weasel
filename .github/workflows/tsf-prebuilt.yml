@@ -174,6 +174,23 @@ jobs:
             Write-Host '=== Fresh ProfileMgr after TF_InvalidAssemblyListCacheIfExist ==='
             Get-Content $postInvalidateOut
 
+            Write-Host '=== Start ctfmon for the standard-user logon context ==='
+            $ctfmonProcess = Start-Process -FilePath "$env:WINDIR\System32\ctfmon.exe" `
+              -Credential $credential -LoadUserProfile -Environment $childEnvironment -PassThru
+            Start-Sleep -Seconds 3
+            Write-Host "ctfmon pid=$($ctfmonProcess.Id) exited=$($ctfmonProcess.HasExited)"
+
+            $postCtfmonOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-post-ctfmon-inspect.out'
+            $postCtfmonErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-post-ctfmon-inspect.err'
+            $postCtfmonInspect = Start-Process -FilePath $probe -ArgumentList 'inspect' `
+              -Credential $credential -LoadUserProfile -Environment $childEnvironment -Wait -PassThru `
+              -RedirectStandardOutput $postCtfmonOut -RedirectStandardError $postCtfmonErr
+            Write-Host '=== Fresh ProfileMgr while standard-user ctfmon is running ==='
+            Get-Content $postCtfmonOut
+            if (-not $ctfmonProcess.HasExited) {
+              Stop-Process -Id $ctfmonProcess.Id -Force -ErrorAction SilentlyContinue
+            }
+
             $postInstallLanguageOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-language-after-install.out'
             $postInstallLanguageErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-language-after-install.err'
             $languageCommand = 'Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }'
