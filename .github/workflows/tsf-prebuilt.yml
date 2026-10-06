@@ -348,37 +348,63 @@ jobs:
               control_processor->Release();
             }
 
-            std::puts("=== ProfileMgr after EnableLanguageProfile ===");
-            dump_profiles(mgr);
+            ITfTextInputProcessorEx* diagnostic_processor = nullptr;
+            HRESULT create_diagnostic_processor = CoCreateInstance(
+                kWeaselClsid, nullptr, CLSCTX_INPROC_SERVER,
+                IID_ITfTextInputProcessorEx,
+                reinterpret_cast<void**>(&diagnostic_processor));
+            std::printf("Diag Weasel processor CoCreate HRESULT: 0x%08X\n",
+                        static_cast<unsigned>(create_diagnostic_processor));
+            if (diagnostic_processor) {
+              ITfThreadMgr* diagnostic_thread_mgr = nullptr;
+              HRESULT create_diagnostic_thread_mgr = CoCreateInstance(
+                  CLSID_TF_ThreadMgr, nullptr, CLSCTX_INPROC_SERVER,
+                  IID_ITfThreadMgr,
+                  reinterpret_cast<void**>(&diagnostic_thread_mgr));
+              std::printf("Diag ThreadMgr CoCreate HRESULT: 0x%08X\n",
+                          static_cast<unsigned>(create_diagnostic_thread_mgr));
+              if (diagnostic_thread_mgr) {
+                TfClientId diagnostic_client_id = TF_CLIENTID_NULL;
+                HRESULT activate_diagnostic_thread_mgr =
+                    diagnostic_thread_mgr->Activate(&diagnostic_client_id);
+                std::printf("Diag ThreadMgr Activate HRESULT: 0x%08X client_id=%lu\n",
+                            static_cast<unsigned>(activate_diagnostic_thread_mgr),
+                            static_cast<unsigned long>(diagnostic_client_id));
+                if (SUCCEEDED(activate_diagnostic_thread_mgr)) {
+                  ITfSource* source = nullptr;
+                  HRESULT source_hr = diagnostic_thread_mgr->QueryInterface(
+                      IID_ITfSource, reinterpret_cast<void**>(&source));
+                  std::printf("Diag QI ITfSource HRESULT: 0x%08X\n",
+                              static_cast<unsigned>(source_hr));
+                  if (source) {
+                    ITfThreadMgrEventSink* event_sink = nullptr;
+                    HRESULT sink_hr = diagnostic_processor->QueryInterface(
+                        IID_ITfThreadMgrEventSink,
+                        reinterpret_cast<void**>(&event_sink));
+                    std::printf("Diag QI ITfThreadMgrEventSink HRESULT: 0x%08X\n",
+                                static_cast<unsigned>(sink_hr));
+                    if (event_sink) {
+                      DWORD cookie = TF_INVALID_COOKIE;
+                      HRESULT advise = source->AdviseSink(
+                          IID_ITfThreadMgrEventSink, event_sink, &cookie);
+                      std::printf("Diag Advise ITfThreadMgrEventSink HRESULT: 0x%08X cookie=%lu\n",
+                                  static_cast<unsigned>(advise),
+                                  static_cast<unsigned long>(cookie));
+                      if (SUCCEEDED(advise))
+                        source->UnadviseSink(cookie);
+                      event_sink->Release();
+                    }
 
-            HMODULE input = LoadLibraryW(L"input.dll");
-            std::printf("LoadLibrary(input.dll): %s\n", input ? "ok" : "failed");
-            if (input) {
-              using InstallLayoutOrTipFn = BOOL(WINAPI*)(LPCWSTR, DWORD);
-              using InstallLayoutOrTipUserRegFn = BOOL(WINAPI*)(
-                  LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, DWORD);
-              using QueryLayoutOrTipStringUserRegFn = HRESULT(WINAPI*)(
-                  LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, DWORD);
-              auto install_layout_or_tip = reinterpret_cast<InstallLayoutOrTipFn>(
-                  GetProcAddress(input, "InstallLayoutOrTip"));
-              auto install_layout_or_tip_user_reg =
-                  reinterpret_cast<InstallLayoutOrTipUserRegFn>(
-                      GetProcAddress(input, "InstallLayoutOrTipUserReg"));
-              auto query_layout_or_tip_user_reg =
-                  reinterpret_cast<QueryLayoutOrTipStringUserRegFn>(
-                      GetProcAddress(input, "QueryLayoutOrTipStringUserReg"));
-              std::printf("GetProcAddress(InstallLayoutOrTip): %s\n",
-                          install_layout_or_tip ? "ok" : "failed");
-              std::printf("GetProcAddress(InstallLayoutOrTipUserReg): %s\n",
-                          install_layout_or_tip_user_reg ? "ok" : "failed");
-              std::printf("GetProcAddress(QueryLayoutOrTipStringUserReg): %s\n",
-                          query_layout_or_tip_user_reg ? "ok" : "failed");
-              const WCHAR tip[] =
-                  L"0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}";
-              if (query_layout_or_tip_user_reg) {
-                HRESULT valid = query_layout_or_tip_user_reg(
-                    nullptr, nullptr, nullptr, tip, 0);
-                std::printf("QueryLayoutOrTipStringUserReg(default roots) HRESULT: 0x%08X\n",
+                    ITfThreadFocusSink* focus_sink = nullptr;
+                    HRESULT focus_sink_hr = diagnostic_processor->QueryInterface(
+                        IID_ITfThreadFocusSink,
+                        reinterpret_cast<void**>(&focus_sink));
+                    std::printf("Diag QI ITfThreadFocusSink HRESULT: 0x%08X\n",
+                       
+
+[... output truncated; original approximate token count: 11592 ...]
+
+
                             static_cast<unsigned>(valid));
               }
               if (install_layout_or_tip_user_reg) {
