@@ -52,27 +52,6 @@ static bool IsPerUserRegistration() {
          0;
 }
 
-static bool OverrideMachineRegistryForCurrentUser(bool enable) {
-  if (!enable) {
-    const LSTATUS status = RegOverridePredefKey(HKEY_LOCAL_MACHINE, NULL);
-    TraceRegistration(L"Restore HKLM override status=%ld", status);
-    return status == ERROR_SUCCESS;
-  }
-
-  HKEY current_user = NULL;
-  const LSTATUS open_status =
-      RegOpenCurrentUser(KEY_READ | KEY_WRITE, &current_user);
-  TraceRegistration(L"RegOpenCurrentUser status=%ld", open_status);
-  if (open_status != ERROR_SUCCESS)
-    return false;
-
-  const LSTATUS override_status =
-      RegOverridePredefKey(HKEY_LOCAL_MACHINE, current_user);
-  RegCloseKey(current_user);
-  TraceRegistration(L"Override HKLM to HKCU status=%ld", override_status);
-  return override_status == ERROR_SUCCESS;
-}
-
 static BOOL OpenClassesRoot(HKEY* root, bool* close_root) {
   if (!IsPerUserRegistration()) {
     *root = HKEY_CLASSES_ROOT;
@@ -177,13 +156,45 @@ static bool GuidToStringW(REFGUID guid, std::wstring& value) {
   return true;
 }
 
+static bool SetStringValueW(HKEY key,
+                            LPCWSTR name,
+                            const std::wstring& value,
+                            DWORD type = REG_SZ) {
+  return RegSetValueExW(
+             key, name, 0, type, reinterpret_cast<const BYTE*>(value.c_str()),
+             static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) ==
+         ERROR_SUCCESS;
+}
+
+static bool SetDwordValueW(HKEY key, LPCWSTR name, DWORD value) {
+  return RegSetValueExW(key, name, 0, REG_DWORD,
+                        reinterpret_cast<const BYTE*>(&value),
+                        sizeof(value)) == ERROR_SUCCESS;
+}
+
+static bool CreateEmptyUserKey(const std::wstring& path) {
+  HKEY key;
+  DWORD disposition;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, NULL,
+                      REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &key,
+                      &disposition) != ERROR_SUCCESS)
+    return false;
+  RegCloseKey(key);
+  return true;
+}
+
 BOOL RegisterProfilesForCurrentUser() {
+  std::wstring clsid;
+  std::wstring profile_guid;
+  if (!GuidToStringW(c_clsidTextService, clsid) ||
+      !GuidToStringW(c_guidProfile, profile_guid))
+    return FALSE;
+
   WCHAR selected_profile[100] = {};
   std::wstring profile;
   if (GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", selected_profile,
-                              ARRAYSIZE(selected_profile)) > 0) {
+                              ARRAYSIZE(selected_profile)) > 0)
     profile = selected_profile;
-  }
 
   BOOL hans_enable = (profile == L"hans");
   BOOL hant_enable = (profile == L"hant");
@@ -194,85 +205,68 @@ BOOL RegisterProfilesForCurrentUser() {
                                 !macau_enable && !sg_enable);
 
   WCHAR icon_file[MAX_PATH] = {};
-  const ULONG icon_file_len =
-      GetModuleFileNameW(g_hInst, icon_file, ARRAYSIZE(icon_file));
+  GetModuleFileNameW(g_hInst, icon_file, ARRAYSIZE(icon_file));
   const auto description = get_weasel_ime_name();
-
-  if (!OverrideMachineRegistryForCurrentUser(true))
-    return FALSE;
-
-  bool ok = true;
-  CComPtr<ITfInputProcessorProfiles> input_processor_profiles;
-  HRESULT hr = input_processor_profiles.CoCreateInstance(
-      CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER);
-  TraceRegistration(L"Per-user CoCreate ITfInputProcessorProfiles hr=0x%08X",
-                    hr);
-  if (FAILED(hr)) {
-    ok = false;
-  } else {
-    hr = input_processor_profiles->Register(c_clsidTextService);
-    TraceRegistration(L"Per-user Register text service hr=0x%08X", hr);
-    ok = SUCCEEDED(hr);
-  }
-
-  CComPtr<ITfInputProcessorProfileMgr> profile_mgr;
-  if (ok) {
-    hr = profile_mgr.CoCreateInstance(CLSID_TF_InputProcessorProfiles, NULL,
-                                      CLSCTX_INPROC_SERVER);
-    TraceRegistration(L"Per-user CoCreate ProfileMgr hr=0x%08X", hr);
-    ok = SUCCEEDED(hr);
-  }
 
   const struct {
     LANGID lang_id;
     BOOL enable;
+    HKL substitute;
   } profiles[] = {
-      {TEXTSERVICE_LANGID_HANS, hans_enable},
-      {TEXTSERVICE_LANGID_HANT, hant_enable},
-      {TEXTSERVICE_LANGID_HONGKONG, hk_enable},
-      {TEXTSERVICE_LANGID_MACAU, macau_enable},
-      {TEXTSERVICE_LANGID_SINGAPORE, sg_enable},
+      {TEXTSERVICE_LANGID_HANS, hans_enable, FindIME(TEXTSERVICE_LANGID_HANS)},
+      {TEXTSERVICE_LANGID_HANT, hant_enable, FindIME(TEXTSERVICE_LANGID_HANT)},
+      {TEXTSERVICE_LANGID_HONGKONG, hk_enable, NULL},
+      {TEXTSERVICE_LANGID_MACAU, macau_enable, NULL},
+      {TEXTSERVICE_LANGID_SINGAPORE, sg_enable, NULL},
   };
 
-  if (ok) {
-    for (const auto& item : profiles) {
-      hr = profile_mgr->RegisterProfile(
-          c_clsidTextService, item.lang_id, c_guidProfile, description.c_str(),
-          static_cast<ULONG>(description.size()), icon_file, icon_file_len,
-          TEXTSERVICE_ICON_INDEX, NULL, 0, item.enable, 0);
-      TraceRegistration(
-          L"Per-user RegisterProfile lang=0x%04X enable=%d "
-          L"hr=0x%08X",
-          item.lang_id, item.enable, hr);
-      if (FAILED(hr)) {
-        ok = false;
-        break;
-      }
-    }
-  }
+  const std::wstring tip_root = std::wstring(c_szUserTipRoot) + L"\\" + clsid;
+  HKEY root_key;
+  DWORD disposition;
+  LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, tip_root.c_str(), 0, NULL,
+                                   REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL,
+                                   &root_key, &disposition);
+  TraceRegistration(L"TIP root status=%ld path=%s", status, tip_root.c_str());
+  if (status != ERROR_SUCCESS)
+    return FALSE;
+  SetDwordValueW(root_key, L"Enable", 1);
+  RegCloseKey(root_key);
 
-  if (!ok) {
-    if (profile_mgr) {
-      for (const auto& item : profiles) {
-        profile_mgr->UnregisterProfile(c_clsidTextService, item.lang_id,
-                                       c_guidProfile, 0);
-      }
-    }
-    if (input_processor_profiles)
-      input_processor_profiles->Unregister(c_clsidTextService);
-  }
+  for (const auto& item : profiles) {
+    WCHAR lang_id[16];
+    StringCchPrintfW(lang_id, ARRAYSIZE(lang_id), L"0x%08X", item.lang_id);
+    const std::wstring key_path =
+        tip_root + L"\\LanguageProfile\\" + lang_id + L"\\" + profile_guid;
 
-  const bool restored = OverrideMachineRegistryForCurrentUser(false);
-  return ok && restored;
+    HKEY key;
+    status = RegCreateKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0, NULL,
+                             REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &key,
+                             &disposition);
+    TraceRegistration(L"Profile key status=%ld path=%s", status,
+                      key_path.c_str());
+    if (status != ERROR_SUCCESS)
+      return FALSE;
+
+    bool ok = SetStringValueW(key, L"Description", description) &&
+              SetStringValueW(key, L"IconFile", icon_file) &&
+              SetDwordValueW(key, L"IconIndex", TEXTSERVICE_ICON_INDEX) &&
+              SetDwordValueW(key, L"Enable", item.enable ? 1 : 0);
+
+    if (item.substitute) {
+      WCHAR substitute[16];
+      StringCchPrintfW(
+          substitute, ARRAYSIZE(substitute), L"0x%08X",
+          static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(item.substitute)));
+      ok = ok && SetStringValueW(key, L"SubstituteLayout", substitute);
+    }
+    RegCloseKey(key);
+    if (!ok)
+      return FALSE;
+  }
+  return TRUE;
 }
 
 void UnregisterProfilesForCurrentUser() {
-  if (OverrideMachineRegistryForCurrentUser(true)) {
-    UnregisterProfiles();
-    OverrideMachineRegistryForCurrentUser(false);
-  }
-
-  // Clean up registry-only registrations created by older per-user builds.
   std::wstring clsid;
   if (!GuidToStringW(c_clsidTextService, clsid))
     return;
@@ -322,38 +316,30 @@ BOOL RegisterCategories() {
 }
 
 BOOL RegisterCategoriesForCurrentUser() {
-  if (!OverrideMachineRegistryForCurrentUser(true))
+  std::wstring clsid;
+  if (!GuidToStringW(c_clsidTextService, clsid))
     return FALSE;
 
-  const bool registered = RegisterCategories();
-  TraceRegistration(L"Per-user RegisterCategories=%d", registered);
-  if (!registered)
-    UnregisterCategories();
+  const std::wstring tip_root = std::wstring(c_szUserTipRoot) + L"\\" + clsid;
+  for (const auto& guid : SupportCategories0) {
+    std::wstring category;
+    if (!GuidToStringW(guid, category))
+      return FALSE;
 
-  const bool restored = OverrideMachineRegistryForCurrentUser(false);
-  return registered && restored;
+    if (!CreateEmptyUserKey(tip_root + L"\\Category\\Category\\" + category +
+                            L"\\" + clsid) ||
+        !CreateEmptyUserKey(tip_root + L"\\Category\\Item\\" + clsid + L"\\" +
+                            category) ||
+        !CreateEmptyUserKey(std::wstring(c_szUserCategoryRoot) + L"\\" +
+                            category + L"\\" + clsid)) {
+      TraceRegistration(L"Category registration failed: %s", category.c_str());
+      return FALSE;
+    }
+  }
+  return TRUE;
 }
 
 void UnregisterCategoriesForCurrentUser() {
-  if (OverrideMachineRegistryForCurrentUser(true)) {
-    UnregisterCategories();
-
-    CComPtr<ITfInputProcessorProfiles> input_processor_profiles;
-    const HRESULT create_hr = input_processor_profiles.CoCreateInstance(
-        CLSID_TF_InputProcessorProfiles, NULL, CLSCTX_INPROC_SERVER);
-    TraceRegistration(L"Per-user uninstall CoCreate profiles hr=0x%08X",
-                      create_hr);
-    if (SUCCEEDED(create_hr)) {
-      const HRESULT unregister_hr =
-          input_processor_profiles->Unregister(c_clsidTextService);
-      TraceRegistration(L"Per-user Unregister text service hr=0x%08X",
-                        unregister_hr);
-    }
-
-    OverrideMachineRegistryForCurrentUser(false);
-  }
-
-  // Clean up registry-only category entries created by older per-user builds.
   std::wstring clsid;
   if (!GuidToStringW(c_clsidTextService, clsid))
     return;
