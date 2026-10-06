@@ -1,6 +1,7 @@
 ﻿#include "stdafx.h"
 #include <string>
 #include <vector>
+#include <cstdarg>
 #include <msctf.h>
 #include <strsafe.h>
 #include <StringAlgorithm.hpp>
@@ -24,6 +25,39 @@ static const GUID c_guidProfile = {
 
 #define ILOT_UNINSTALL 0x00000001
 typedef HRESULT(WINAPI* PTF_INSTALLLAYOUTORTIP)(LPCWSTR psz, DWORD dwFlags);
+typedef BOOL(WINAPI* PTF_INSTALLLAYOUTORTIPUSERREG)(LPCWSTR pszUserReg,
+                                                    LPCWSTR pszSystemReg,
+                                                    LPCWSTR pszSoftwareReg,
+                                                    LPCWSTR psz,
+                                                    DWORD dwFlags);
+
+static void TraceRegistration(const wchar_t* format, ...) {
+  WCHAR path[MAX_PATH] = {};
+  if (!GetTempPathW(_countof(path), path))
+    return;
+  if (FAILED(StringCchCatW(path, _countof(path), L"weasel-register.log")))
+    return;
+  WCHAR message[1024] = {};
+  va_list args;
+  va_start(args, format);
+  StringCchVPrintfW(message, _countof(message), format, args);
+  va_end(args);
+  HANDLE file =
+      CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                  NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (file == INVALID_HANDLE_VALUE)
+    return;
+  char utf8[4096] = {};
+  int length = WideCharToMultiByte(CP_UTF8, 0, message, -1, utf8,
+                                   _countof(utf8), NULL, NULL);
+  if (length > 1) {
+    DWORD written;
+    WriteFile(file, utf8, length - 1, &written, NULL);
+    static const char newline[] = "\r\n";
+    WriteFile(file, newline, sizeof(newline) - 1, &written, NULL);
+  }
+  CloseHandle(file);
+}
 
 #define WEASEL_WER_KEY                            \
   L"SOFTWARE\\Microsoft\\Windows\\Windows Error " \
@@ -110,6 +144,26 @@ typedef int (*ime_register_func)(const std::wstring& ime_path,
                                  const std::wstring& profile,
                                  bool silent);
 
+static bool is_per_user_registration() {
+  WCHAR value[2];
+  return GetEnvironmentVariableW(L"WEASEL_PER_USER", value, _countof(value)) >
+         0;
+}
+
+static bool override_machine_registry_for_current_user(bool enable) {
+  if (!enable)
+    return RegOverridePredefKey(HKEY_LOCAL_MACHINE, NULL) == ERROR_SUCCESS;
+
+  HKEY current_user = NULL;
+  LSTATUS result = RegOpenCurrentUser(KEY_READ | KEY_WRITE, &current_user);
+  if (result != ERROR_SUCCESS)
+    return false;
+
+  result = RegOverridePredefKey(HKEY_LOCAL_MACHINE, current_user);
+  RegCloseKey(current_user);
+  return result == ERROR_SUCCESS;
+}
+
 static LANGID profile_to_lang_id(const std::wstring& profile) {
   if (profile == L"hant")
     return MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL);
@@ -138,10 +192,234 @@ static std::wstring profile_to_title(const std::wstring& profile) {
   return std::wstring(langidText) + L":" + clsidTextService + profileGuid;
 }
 
+static bool read_reg_string(HKEY key, const WCHAR* name, std::wstring& value) {
+  DWORD type = 0;
+  DWORD bytes = 0;
+  if (RegQueryValueExW(key, name, NULL, &type, NULL, &bytes) != ERROR_SUCCESS ||
+      type != REG_SZ || bytes < sizeof(WCHAR))
+    return false;
+
+  std::vector<WCHAR> buffer(bytes / sizeof(WCHAR) + 1, L'\0');
+  if (RegQueryValueExW(key, name, NULL, &type,
+                       reinterpret_cast<LPBYTE>(buffer.data()),
+                       &bytes) != ERROR_SUCCESS)
+    return false;
+
+  value.assign(buffer.data());
+  return true;
+}
+
+static bool write_reg_string(HKEY key,
+                             const WCHAR* name,
+                             const std::wstring& value) {
+  return RegSetValueExW(
+             key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
+             static_cast<DWORD>((value.size() + 1) * sizeof(WCHAR))) ==
+         ERROR_SUCCESS;
+}
+
+static std::wstring profile_to_language_tag(const std::wstring& profile) {
+  if (profile == L"hant")
+    return L"zh-Hant-TW";
+  if (profile == L"hongkong")
+    return L"zh-Hant-HK";
+  if (profile == L"macau")
+    return L"zh-Hant-MO";
+  if (profile == L"singapore")
+    return L"zh-Hans-SG";
+  return L"zh-Hans-CN";
+}
+
+static bool update_user_profile_input_method(const std::wstring& profile,
+                                             bool add) {
+  const std::wstring user_profile =
+      L"Control Panel\\International\\User Profile\\" +
+      profile_to_language_tag(profile);
+  const std::wstring tip = profile_to_title(profile);
+
+  HKEY key = NULL;
+  DWORD disposition = 0;
+  LSTATUS status =
+      add ? RegCreateKeyExW(HKEY_CURRENT_USER, user_profile.c_str(), 0, NULL,
+                            REG_OPTION_NON_VOLATILE,
+                            KEY_QUERY_VALUE | KEY_SET_VALUE, NULL, &key,
+                            &disposition)
+          : RegOpenKeyExW(HKEY_CURRENT_USER, user_profile.c_str(), 0,
+                          KEY_SET_VALUE, &key);
+
+  if (status == ERROR_FILE_NOT_FOUND && !add)
+    return true;
+  if (status != ERROR_SUCCESS) {
+    TraceRegistration(L"User Profile open status=%ld path=%s", status,
+                      user_profile.c_str());
+    return false;
+  }
+
+  bool ok = false;
+  if (add) {
+    DWORD order = 1;
+    DWORD type = 0;
+    DWORD size = sizeof(order);
+    if (RegQueryValueExW(key, tip.c_str(), NULL, &type,
+                         reinterpret_cast<LPBYTE>(&order),
+                         &size) != ERROR_SUCCESS ||
+        type != REG_DWORD || order == 0) {
+      DWORD max_order = 0;
+      for (DWORD index = 0;; ++index) {
+        WCHAR name[512] = {};
+        DWORD name_size = _countof(name);
+        DWORD value = 0;
+        DWORD value_size = sizeof(value);
+        type = 0;
+        const LSTATUS enum_status =
+            RegEnumValueW(key, index, name, &name_size, NULL, &type,
+                          reinterpret_cast<LPBYTE>(&value), &value_size);
+        if (enum_status == ERROR_NO_MORE_ITEMS)
+          break;
+        if (enum_status != ERROR_SUCCESS && enum_status != ERROR_MORE_DATA) {
+          TraceRegistration(
+              L"User Profile enumerate failed status=%ld index=%lu",
+              enum_status, index);
+          RegCloseKey(key);
+          return false;
+        }
+        if (enum_status == ERROR_SUCCESS && type == REG_DWORD &&
+            value_size == sizeof(value) && value > max_order)
+          max_order = value;
+      }
+      order = max_order + 1;
+    }
+
+    ok = RegSetValueExW(key, tip.c_str(), 0, REG_DWORD,
+                        reinterpret_cast<const BYTE*>(&order),
+                        sizeof(order)) == ERROR_SUCCESS;
+    TraceRegistration(L"User Profile add path=%s value=%s order=%lu success=%d",
+                      user_profile.c_str(), tip.c_str(), order, ok);
+  } else {
+    status = RegDeleteValueW(key, tip.c_str());
+    ok = status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND;
+    TraceRegistration(L"User Profile remove status=%ld path=%s value=%s",
+                      status, user_profile.c_str(), tip.c_str());
+  }
+
+  RegCloseKey(key);
+  return ok;
+}
+
+static bool update_user_input_method(const std::wstring& profile, bool add) {
+  WCHAR clsid[64] = {};
+  WCHAR profile_guid[64] = {};
+  WCHAR category_guid[64] = {};
+  WCHAR lang_id[16] = {};
+
+  if (StringFromGUID2(c_clsidTextService, clsid, _countof(clsid)) <= 0 ||
+      StringFromGUID2(c_guidProfile, profile_guid, _countof(profile_guid)) <=
+          0 ||
+      StringFromGUID2(GUID_TFCAT_TIP_KEYBOARD, category_guid,
+                      _countof(category_guid)) <= 0 ||
+      FAILED(StringCchPrintfW(lang_id, _countof(lang_id), L"0x%08X",
+                              profile_to_lang_id(profile)))) {
+    return false;
+  }
+
+  const std::wstring base =
+      L"Software\\Microsoft\\CTF\\SortOrder\\AssemblyItem\\" +
+      std::wstring(lang_id) + L"\\" + category_guid;
+
+  HKEY base_key = NULL;
+  DWORD disposition = 0;
+  LSTATUS status = RegCreateKeyExW(
+      HKEY_CURRENT_USER, base.c_str(), 0, NULL, REG_OPTION_NON_VOLATILE,
+      KEY_READ | KEY_WRITE, NULL, &base_key, &disposition);
+  TraceRegistration(L"SortOrder base status=%ld path=%s", status, base.c_str());
+  if (status != ERROR_SUCCESS)
+    return false;
+
+  std::vector<std::wstring> matching_slots;
+  DWORD first_free = 0xFFFFFFFF;
+  for (DWORD slot = 0; slot < 256; ++slot) {
+    WCHAR slot_name[16] = {};
+    StringCchPrintfW(slot_name, _countof(slot_name), L"%08X", slot);
+
+    HKEY slot_key = NULL;
+    status = RegOpenKeyExW(base_key, slot_name, 0, KEY_READ, &slot_key);
+    if (status == ERROR_FILE_NOT_FOUND) {
+      if (first_free == 0xFFFFFFFF)
+        first_free = slot;
+      continue;
+    }
+    if (status != ERROR_SUCCESS)
+      continue;
+
+    std::wstring existing_clsid;
+    std::wstring existing_profile;
+    const bool matches =
+        read_reg_string(slot_key, L"CLSID", existing_clsid) &&
+        read_reg_string(slot_key, L"Profile", existing_profile) &&
+        _wcsicmp(existing_clsid.c_str(), clsid) == 0 &&
+        _wcsicmp(existing_profile.c_str(), profile_guid) == 0;
+    RegCloseKey(slot_key);
+
+    if (matches)
+      matching_slots.emplace_back(slot_name);
+  }
+
+  if (!add) {
+    bool ok = true;
+    for (const auto& slot : matching_slots) {
+      status = RegDeleteTreeW(base_key, slot.c_str());
+      TraceRegistration(L"SortOrder remove slot=%s status=%ld", slot.c_str(),
+                        status);
+      if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND)
+        ok = false;
+    }
+    RegCloseKey(base_key);
+    return update_user_profile_input_method(profile, false) && ok;
+  }
+
+  if (!matching_slots.empty()) {
+    TraceRegistration(L"SortOrder already present slot=%s",
+                      matching_slots.front().c_str());
+    RegCloseKey(base_key);
+    return update_user_profile_input_method(profile, true);
+  }
+
+  if (first_free == 0xFFFFFFFF) {
+    RegCloseKey(base_key);
+    return false;
+  }
+
+  WCHAR slot_name[16] = {};
+  StringCchPrintfW(slot_name, _countof(slot_name), L"%08X", first_free);
+  HKEY slot_key = NULL;
+  status =
+      RegCreateKeyExW(base_key, slot_name, 0, NULL, REG_OPTION_NON_VOLATILE,
+                      KEY_WRITE, NULL, &slot_key, &disposition);
+  if (status != ERROR_SUCCESS) {
+    RegCloseKey(base_key);
+    return false;
+  }
+
+  const bool ok = write_reg_string(slot_key, L"CLSID", clsid) &&
+                  write_reg_string(slot_key, L"Profile", profile_guid);
+  const DWORD keyboard_layout = 0;
+  const bool layout_ok =
+      RegSetValueExW(slot_key, L"KeyboardLayout", 0, REG_DWORD,
+                     reinterpret_cast<const BYTE*>(&keyboard_layout),
+                     sizeof(keyboard_layout)) == ERROR_SUCCESS;
+  TraceRegistration(L"SortOrder add slot=%s success=%d", slot_name,
+                    ok && layout_ok);
+  RegCloseKey(slot_key);
+  RegCloseKey(base_key);
+
+  return ok && layout_ok && update_user_profile_input_method(profile, true);
+}
+
 int install_ime_file(std::wstring& srcPath,
                      const std::wstring& ext,
                      const std::wstring& profile,
                      bool silent,
+                     bool per_user,
                      ime_register_func func) {
   WCHAR path[MAX_PATH];
   GetModuleFileNameW(GetModuleHandle(NULL), path, _countof(path));
@@ -154,6 +432,43 @@ int install_ime_file(std::wstring& srcPath,
   _wsplitpath_s(path, drive, _countof(drive), dir, _countof(dir), NULL, 0, NULL,
                 0);
   srcPath = std::wstring(drive) + dir + srcFileName;
+
+  if (per_user) {
+    SetEnvironmentVariableW(L"WEASEL_PER_USER", L"1");
+    int retval = func(srcPath, true, false, false, profile, silent);
+    if (is_wow64()) {
+      PVOID oldValue = NULL;
+      if (Wow64DisableWow64FsRedirection(&oldValue) == FALSE) {
+        MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRCANCELFSREDIRECT,
+                              IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
+        return 1;
+      }
+
+      if (is_arm64_machine()) {
+        WCHAR sysarm32[MAX_PATH];
+        if (get_wow_arm32_system_dir(sysarm32, _countof(sysarm32)) > 0) {
+          std::wstring arm32Path = srcPath;
+          ireplace_last(arm32Path, ext, L"ARM" + ext);
+          retval += func(arm32Path, true, true, true, profile, silent);
+        }
+
+        std::wstring arm64Path = srcPath;
+        ireplace_last(arm64Path, ext, L"ARM64" + ext);
+        retval += func(arm64Path, true, true, false, profile, silent);
+      } else {
+        std::wstring x64Path = srcPath;
+        ireplace_last(x64Path, ext, L"x64" + ext);
+        retval += func(x64Path, true, true, false, profile, silent);
+      }
+
+      if (Wow64RevertWow64FsRedirection(oldValue) == FALSE) {
+        MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRRECOVERFSREDIRECT,
+                              IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
+        return 1;
+      }
+    }
+    return retval;
+  }
 
   GetSystemDirectoryW(path, _countof(path));
   std::wstring destPath = std::wstring(path) + L"\\weasel" + ext;
@@ -248,8 +563,47 @@ int install_ime_file(std::wstring& srcPath,
 int uninstall_ime_file(const std::wstring& ext,
                        const std::wstring& profile,
                        bool silent,
+                       bool per_user,
                        ime_register_func func) {
   int retval = 0;
+  if (per_user) {
+    SetEnvironmentVariableW(L"WEASEL_PER_USER", L"1");
+    WCHAR modulePath[MAX_PATH];
+    GetModuleFileNameW(GetModuleHandle(NULL), modulePath, _countof(modulePath));
+    std::wstring basePath(modulePath);
+    basePath.resize(basePath.find_last_of(L"\\") + 1);
+
+    std::wstring imePath = basePath + L"weasel" + ext;
+    retval += func(imePath, false, false, false, profile, silent);
+    if (is_wow64()) {
+      PVOID oldValue = NULL;
+      if (Wow64DisableWow64FsRedirection(&oldValue) == FALSE) {
+        MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRCANCELFSREDIRECT,
+                              IDS_STR_UNINSTALL_FAILED, MB_ICONERROR | MB_OK);
+        return 1;
+      }
+
+      if (is_arm64_machine()) {
+        WCHAR sysarm32[MAX_PATH];
+        if (get_wow_arm32_system_dir(sysarm32, _countof(sysarm32)) > 0) {
+          std::wstring arm32Path = basePath + L"weaselARM" + ext;
+          retval += func(arm32Path, false, true, true, profile, silent);
+        }
+        std::wstring arm64Path = basePath + L"weaselARM64" + ext;
+        retval += func(arm64Path, false, true, false, profile, silent);
+      } else {
+        std::wstring x64Path = basePath + L"weaselx64" + ext;
+        retval += func(x64Path, false, true, false, profile, silent);
+      }
+
+      if (Wow64RevertWow64FsRedirection(oldValue) == FALSE) {
+        MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRRECOVERFSREDIRECT,
+                              IDS_STR_UNINSTALL_FAILED, MB_ICONERROR | MB_OK);
+        return 1;
+      }
+    }
+    return retval;
+  }
   WCHAR path[MAX_PATH];
   GetSystemDirectoryW(path, _countof(path));
   std::wstring imePath(path);
@@ -295,7 +649,13 @@ int uninstall_ime_file(const std::wstring& ext,
 // 注册IME输入法
 // `register_ime` (IMM/.ime) support removed — TSF-only build
 
-void enable_profile(BOOL fEnable, const std::wstring& profile) {
+void enable_profile(BOOL fEnable,
+                    const std::wstring& profile,
+                    bool per_user = false) {
+  if (per_user && !override_machine_registry_for_current_user(true)) {
+    return;
+  }
+
   HRESULT hr;
   ITfInputProcessorProfiles* pProfiles = NULL;
 
@@ -317,6 +677,9 @@ void enable_profile(BOOL fEnable, const std::wstring& profile) {
 
     pProfiles->Release();
   }
+
+  if (per_user)
+    override_machine_registry_for_current_user(false);
 }
 
 // 注册TSF输入法
@@ -327,20 +690,30 @@ int register_text_service(const std::wstring& tsf_path,
                           const std::wstring& profile,
                           bool silent) {
   using RegisterServerFunction = HRESULT(STDAPICALLTYPE*)();
+  const bool per_user = is_per_user_registration();
 
-  if (!register_ime)
-    enable_profile(FALSE, profile);
+  if (!register_ime && !per_user)
+    enable_profile(FALSE, profile, per_user);
 
-  std::wstring params = L" \"" + tsf_path + L"\"";
-  if (!register_ime) {
-    params = L" /u " + params;  // unregister
+  std::wstring params;
+  if (per_user) {
+    params = L" /s /n ";
+    if (!register_ime)
+      params += L"/u ";
+    params += L"/i:user," + profile + L" \"" + tsf_path + L"\"";
+  } else {
+    params = L" \"" + tsf_path + L"\"";
+    if (!register_ime)
+      params = L" /u " + params;  // unregister
+    params = L" /s " + params;
+
+    if (!SetEnvironmentVariable(L"TEXTSERVICE_PROFILE", profile.c_str())) {
+      throw std::runtime_error("SetEnvironmentVariable failed");
+    }
   }
-  // if (silent)  // always silent
-  { params = L" /s " + params; }
 
-  if (!SetEnvironmentVariable(L"TEXTSERVICE_PROFILE", profile.c_str())) {
-    throw std::runtime_error("SetEnvironmentVariable failed");
-  }
+  TraceRegistration(L"WeaselSetup regsvr32 path=%s params=%s", tsf_path.c_str(),
+                    params.c_str());
 
   std::wstring app = L"regsvr32.exe";
   if (is_wowarm32) {
@@ -361,8 +734,27 @@ int register_text_service(const std::wstring& tsf_path,
   shExInfo.nShow = SW_SHOW;
   shExInfo.hInstApp = 0;
   if (ShellExecuteExW(&shExInfo)) {
-    WaitForSingleObject(shExInfo.hProcess, INFINITE);
+    TraceRegistration(L"regsvr32 wait begin path=%s", tsf_path.c_str());
+    const DWORD wait_result = WaitForSingleObject(shExInfo.hProcess, 60000);
+    if (wait_result == WAIT_TIMEOUT) {
+      TraceRegistration(L"regsvr32 timeout path=%s", tsf_path.c_str());
+      TerminateProcess(shExInfo.hProcess, ERROR_TIMEOUT);
+      WaitForSingleObject(shExInfo.hProcess, 5000);
+      CloseHandle(shExInfo.hProcess);
+      return 1;
+    }
+    if (wait_result != WAIT_OBJECT_0) {
+      TraceRegistration(L"regsvr32 wait failed path=%s result=%lu",
+                        tsf_path.c_str(), wait_result);
+      CloseHandle(shExInfo.hProcess);
+      return 1;
+    }
+    DWORD exit_code = 1;
+    GetExitCodeProcess(shExInfo.hProcess, &exit_code);
     CloseHandle(shExInfo.hProcess);
+    TraceRegistration(L"regsvr32 exit=%lu", exit_code);
+    if (exit_code != 0)
+      return 1;
   } else {
     WCHAR msg[100];
     CString str;
@@ -373,27 +765,42 @@ int register_text_service(const std::wstring& tsf_path,
     return 1;
   }
 
-  if (register_ime)
-    enable_profile(TRUE, profile);
+  if (register_ime && !per_user)
+    enable_profile(TRUE, profile, per_user);
 
   return 0;
 }
 
-int install(const std::wstring& profile, bool silent) {
+int install(const std::wstring& profile, bool silent, bool per_user) {
   std::wstring ime_src_path;
   int retval = 0;
 
-  retval += install_ime_file(ime_src_path, L".dll", profile, silent,
+  if (per_user) {
+    WCHAR trace_path[MAX_PATH] = {};
+    if (GetTempPathW(_countof(trace_path), trace_path) &&
+        SUCCEEDED(StringCchCatW(trace_path, _countof(trace_path),
+                                L"weasel-register.log")))
+      DeleteFileW(trace_path);
+  }
+
+  TraceRegistration(L"install begin profile=%s silent=%d per_user=%d",
+                    profile.c_str(), silent, per_user);
+  TraceRegistration(L"install phase=register_text_service begin");
+  retval += install_ime_file(ime_src_path, L".dll", profile, silent, per_user,
                              &register_text_service);
+  TraceRegistration(L"install phase=register_text_service end retval=%d",
+                    retval);
 
   // 写注册表
+  TraceRegistration(L"install phase=weasel_registry begin");
   WCHAR drive[_MAX_DRIVE];
   WCHAR dir[_MAX_DIR];
   _wsplitpath_s(ime_src_path.c_str(), drive, _countof(drive), dir,
                 _countof(dir), NULL, 0, NULL, 0);
   std::wstring rootDir = std::wstring(drive) + dir;
   rootDir.pop_back();
-  auto ret = SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY, L"WeaselRoot",
+  HKEY install_root = per_user ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE;
+  auto ret = SetRegKeyValue(install_root, WEASEL_REG_KEY, L"WeaselRoot",
                             rootDir.c_str(), REG_SZ);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
     MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRWRITEWEASELROOT,
@@ -402,7 +809,7 @@ int install(const std::wstring& profile, bool silent) {
   }
 
   const std::wstring executable = L"WeaselServer.exe";
-  ret = SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY, L"ServerExecutable",
+  ret = SetRegKeyValue(install_root, WEASEL_REG_KEY, L"ServerExecutable",
                        executable.c_str(), REG_SZ);
   if (FAILED(HRESULT_FROM_WIN32(ret))) {
     MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_ERRREGIMEWRITESVREXE,
@@ -426,49 +833,59 @@ int install(const std::wstring& profile, bool silent) {
                           IDS_STR_INSTALL_FAILED, MB_ICONERROR | MB_OK);
     return 1;
   }
+  TraceRegistration(L"install phase=weasel_registry end");
 
-  // InstallLayoutOrTip
-  // https://learn.microsoft.com/zh-cn/windows/win32/tsf/installlayoutortip
-  // example in ref page not right with "*PTF_ INSTALLLAYOUTORTIP"
-  // space inside should be removed
+  // Enable the installed profile for the current user.
   HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
   if (hInputDLL) {
-    PTF_INSTALLLAYOUTORTIP pfnInstallLayoutOrTip;
-    pfnInstallLayoutOrTip =
-        (PTF_INSTALLLAYOUTORTIP)GetProcAddress(hInputDLL, "InstallLayoutOrTip");
-    if (pfnInstallLayoutOrTip) {
-      std::wstring title = profile_to_title(profile);
-      if (!title.empty())
-        (*pfnInstallLayoutOrTip)(title.c_str(), 0);
+    std::wstring title = profile_to_title(profile);
+    if (!title.empty()) {
+      if (!per_user) {
+        auto pfnInstallLayoutOrTip = (PTF_INSTALLLAYOUTORTIP)GetProcAddress(
+            hInputDLL, "InstallLayoutOrTip");
+        if (pfnInstallLayoutOrTip)
+          (*pfnInstallLayoutOrTip)(title.c_str(), 0);
+      }
     }
     FreeLibrary(hInputDLL);
   }
 
   // https://learn.microsoft.com/zh-cn/windows/win32/wer/collecting-user-mode-dumps
-  const std::wstring dmpPathW = WeaselLogPath().wstring();
-  // DumpFolder
-  SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpFolder",
-                 dmpPathW.c_str(), REG_SZ, true);
-  // dump type 0
-  SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpType", 0, REG_DWORD,
-                 true);
-  // CustomDumpFlags, MiniDumpNormal
-  SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"CustomDumpFlags", 0,
-                 REG_DWORD, true);
-  // maximium dump count 10
-  SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpCount", 10,
-                 REG_DWORD, true);
+  if (!per_user) {
+    const std::wstring dmpPathW = WeaselLogPath().wstring();
+    SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpFolder",
+                   dmpPathW.c_str(), REG_SZ, true);
+    SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpType", 0,
+                   REG_DWORD, true);
+    SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"CustomDumpFlags", 0,
+                   REG_DWORD, true);
+    SetRegKeyValue(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, L"DumpCount", 10,
+                   REG_DWORD, true);
+  }
 
   if (retval)
     return 1;
 
-  MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_INSTALL_SUCCESS_INFO,
-                        IDS_STR_INSTALL_SUCCESS_CAP,
-                        MB_ICONINFORMATION | MB_OK);
+  if (per_user) {
+    TraceRegistration(L"install phase=user_input_method begin");
+    if (!update_user_input_method(profile, true)) {
+      TraceRegistration(L"install phase=user_input_method failed");
+      return 1;
+    }
+    TraceRegistration(L"install phase=user_input_method end");
+  }
+
+  TraceRegistration(L"install completed profile=%s per_user=%d",
+                    profile.c_str(), per_user);
+  if (!per_user) {
+    MSG_NOT_SILENT_BY_IDS(silent, IDS_STR_INSTALL_SUCCESS_INFO,
+                          IDS_STR_INSTALL_SUCCESS_CAP,
+                          MB_ICONINFORMATION | MB_OK);
+  }
   return 0;
 }
 
-int uninstall(bool silent) {
+int uninstall(bool silent, bool per_user) {
   // 注销输入法
   int retval = 0;
 
@@ -492,35 +909,42 @@ int uninstall(bool silent) {
       }
     }
 
-    HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
-    if (hInputDLL) {
-      PTF_INSTALLLAYOUTORTIP pfnInstallLayoutOrTip;
-      pfnInstallLayoutOrTip = (PTF_INSTALLLAYOUTORTIP)GetProcAddress(
-          hInputDLL, "InstallLayoutOrTip");
-      if (pfnInstallLayoutOrTip) {
+    if (per_user) {
+      update_user_input_method(profile, false);
+    } else {
+      HMODULE hInputDLL = LoadLibrary(TEXT("input.dll"));
+      if (hInputDLL) {
         std::wstring title = profile_to_title(profile);
-        if (!title.empty())
-          (*pfnInstallLayoutOrTip)(title.c_str(), ILOT_UNINSTALL);
+        if (!title.empty()) {
+          auto pfnInstallLayoutOrTip = (PTF_INSTALLLAYOUTORTIP)GetProcAddress(
+              hInputDLL, "InstallLayoutOrTip");
+          if (pfnInstallLayoutOrTip)
+            (*pfnInstallLayoutOrTip)(title.c_str(), ILOT_UNINSTALL);
+        }
+        FreeLibrary(hInputDLL);
       }
-      FreeLibrary(hInputDLL);
     }
     RegCloseKey(hKey);
   }
 
   // IMM/.ime support removed; only uninstall TSF/.dll
-  retval +=
-      uninstall_ime_file(L".dll", profile, silent, &register_text_service);
+  retval += uninstall_ime_file(L".dll", profile, silent, per_user,
+                               &register_text_service);
 
   // 清除注册信息
-  RegDeleteKey(HKEY_LOCAL_MACHINE, WEASEL_REG_KEY);
-  RegDeleteKey(HKEY_LOCAL_MACHINE, RIME_REG_KEY);
+  HKEY install_root = per_user ? HKEY_CURRENT_USER : HKEY_LOCAL_MACHINE;
+  RegDeleteKey(install_root, WEASEL_REG_KEY);
+  if (!per_user)
+    RegDeleteKey(install_root, RIME_REG_KEY);
 
   // delete WER register,
   // "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\Windows Error
   // Reporting\\LocalDumps\\WeaselServer.exe" no WOW64 redirect
 
-  auto flag_wow64 = is_wow64() ? KEY_WOW64_64KEY : 0;
-  RegDeleteKeyEx(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, flag_wow64, 0);
+  if (!per_user) {
+    auto flag_wow64 = is_wow64() ? KEY_WOW64_64KEY : 0;
+    RegDeleteKeyEx(HKEY_LOCAL_MACHINE, WEASEL_WER_KEY, flag_wow64, 0);
+  }
   if (retval)
     return 1;
 
@@ -530,7 +954,28 @@ int uninstall(bool silent) {
   return 0;
 }
 
-bool has_installed() {
+bool has_installed(bool per_user) {
+  if (per_user) {
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, WEASEL_REG_KEY, 0, KEY_READ, &hKey) !=
+        ERROR_SUCCESS)
+      return false;
+    WCHAR root[MAX_PATH];
+    DWORD size = sizeof(root);
+    DWORD type = 0;
+    LSTATUS ret =
+        RegQueryValueExW(hKey, L"WeaselRoot", NULL, &type, (LPBYTE)root, &size);
+    RegCloseKey(hKey);
+    if (ret != ERROR_SUCCESS || type != REG_SZ || root[0] == L'\0')
+      return false;
+
+    const std::filesystem::path install_root(root);
+    return std::filesystem::is_directory(install_root) &&
+           std::filesystem::is_regular_file(install_root /
+                                            L"WeaselSetup.exe") &&
+           std::filesystem::is_regular_file(install_root / L"weasel.dll");
+  }
+
   WCHAR path[MAX_PATH];
   GetSystemDirectory(path, _countof(path));
   std::wstring sysPath(path);

@@ -15,7 +15,7 @@ CAppModule _Module;
 
 static int Run(LPTSTR lpCmdLine);
 static bool IsProcAdmin();
-static int RestartAsAdmin(LPTSTR lpCmdLine);
+static int RestartAsAdmin(LPCTSTR lpCmdLine);
 
 int WINAPI _tWinMain(HINSTANCE hInstance,
                      HINSTANCE /*hPrevInstance*/,
@@ -41,9 +41,9 @@ int WINAPI _tWinMain(HINSTANCE hInstance,
 
   return nRet;
 }
-int install(const std::wstring& profile, bool silent);
-int uninstall(bool silent);
-bool has_installed();
+int install(const std::wstring& profile, bool silent, bool per_user);
+int uninstall(bool silent, bool per_user);
+bool has_installed(bool per_user);
 
 static std::wstring install_dir() {
   WCHAR exe_path[MAX_PATH] = {0};
@@ -54,7 +54,7 @@ static std::wstring install_dir() {
   return dir;
 }
 
-static int CustomInstall(bool installing) {
+static int CustomInstall(bool installing, bool per_user) {
   std::wstring profile = L"hans";
   bool silent = false;
   std::wstring user_dir;
@@ -89,9 +89,9 @@ static int CustomInstall(bool installing) {
     }
     RegCloseKey(hKey);
   }
-  bool _has_installed = has_installed();
+  bool _has_installed = has_installed(per_user);
   if (!silent) {
-    InstallOptionsDialog dlg;
+    InstallOptionsDialog dlg(per_user);
     dlg.installed = _has_installed;
     dlg.profile = profile;
     dlg.user_dir = user_dir;
@@ -105,7 +105,7 @@ static int CustomInstall(bool installing) {
     }
   }
   if (!_has_installed)
-    if (0 != install(profile, silent))
+    if (0 != install(profile, silent, per_user))
       return 1;
 
   if (user_dir.empty()) {
@@ -164,8 +164,24 @@ LPCTSTR GetParamByPrefix(LPCTSTR lpCmdLine, LPCTSTR prefix) {
 
 static int Run(LPTSTR lpCmdLine) {
   constexpr bool silent = true;
+  std::wstring command_line(lpCmdLine);
+  bool per_user = false;
+  const std::wstring per_user_arg = L"/user";
+  if (command_line == per_user_arg) {
+    per_user = true;
+    command_line.clear();
+  } else {
+    const std::wstring suffix = L" " + per_user_arg;
+    if (command_line.size() >= suffix.size() &&
+        command_line.compare(command_line.size() - suffix.size(), suffix.size(),
+                             suffix) == 0) {
+      per_user = true;
+      command_line.resize(command_line.size() - suffix.size());
+    }
+  }
+  LPCTSTR cmd = command_line.c_str();
   // parameter /? or /help to show commandline args
-  if (!wcscmp(L"/?", lpCmdLine) || !wcscmp(L"/help", lpCmdLine)) {
+  if (!wcscmp(L"/?", cmd) || !wcscmp(L"/help", cmd)) {
     WCHAR msg[1024] = {0};
     if (LoadString(GetModuleHandle(NULL), IDS_STR_HELP, msg,
                    sizeof(msg) / sizeof(TCHAR))) {
@@ -191,82 +207,84 @@ static int Run(LPTSTR lpCmdLine) {
           L"/toggleascii   - Toggle ASCII on open/close(ctrl+space)\n"
           L"/testing       - Set update channel to testing\n"
           L"/release       - Set update channel to release\n"
-          L"/userdir:<dir> - Set user directory\n",
+          L"/userdir:<dir> - Set user directory\n"
+          L"/user          - Install for the current user (append to install "
+          L"options)\n",
           L"WeaselSetup", MB_ICONINFORMATION | MB_OK);
     }
     return 0;
   }
-  bool uninstalling = !wcscmp(L"/u", lpCmdLine);
+  bool uninstalling = !wcscmp(L"/u", cmd);
   if (uninstalling) {
-    if (IsProcAdmin())
-      return uninstall(silent);
+    if (per_user || IsProcAdmin())
+      return uninstall(silent, per_user);
     else
-      return RestartAsAdmin(lpCmdLine);
+      return RestartAsAdmin(cmd);
   }
 
-  if (auto res = GetParamByPrefix(lpCmdLine, L"/userdir:")) {
+  if (auto res = GetParamByPrefix(cmd, L"/userdir:")) {
     return SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
                           L"RimeUserDir", res, REG_SZ);
   }
 
-  if (!wcscmp(L"/ls", lpCmdLine)) {
+  if (!wcscmp(L"/ls", cmd)) {
     return SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
                           L"Language", L"chs", REG_SZ);
-  } else if (!wcscmp(L"/lt", lpCmdLine)) {
+  } else if (!wcscmp(L"/lt", cmd)) {
     return SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
                           L"Language", L"cht", REG_SZ);
-  } else if (!wcscmp(L"/le", lpCmdLine)) {
+  } else if (!wcscmp(L"/le", cmd)) {
     return SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
                           L"Language", L"eng", REG_SZ);
   }
 
-  if (!wcscmp(L"/eu", lpCmdLine)) {
+  if (!wcscmp(L"/eu", cmd)) {
     return SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel\\Updates",
                           L"CheckForUpdates", L"1", REG_SZ);
   }
-  if (!wcscmp(L"/du", lpCmdLine)) {
+  if (!wcscmp(L"/du", cmd)) {
     return SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel\\Updates",
                           L"CheckForUpdates", L"0", REG_SZ);
   }
 
-  if (!wcscmp(L"/toggleime", lpCmdLine)) {
+  if (!wcscmp(L"/toggleime", cmd)) {
     return SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
                           L"ToggleImeOnOpenClose", L"yes", REG_SZ);
   }
-  if (!wcscmp(L"/toggleascii", lpCmdLine)) {
+  if (!wcscmp(L"/toggleascii", cmd)) {
     return SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
                           L"ToggleImeOnOpenClose", L"no", REG_SZ);
   }
-  if (!wcscmp(L"/testing", lpCmdLine)) {
+  if (!wcscmp(L"/testing", cmd)) {
     return SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
                           L"UpdateChannel", L"testing", REG_SZ);
   }
-  if (!wcscmp(L"/release", lpCmdLine)) {
+  if (!wcscmp(L"/release", cmd)) {
     return SetRegKeyValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
                           L"UpdateChannel", L"release", REG_SZ);
   }
 
-  if (!IsProcAdmin()) {
-    return RestartAsAdmin(lpCmdLine);
+  if (!per_user && !IsProcAdmin()) {
+    return RestartAsAdmin(cmd);
   }
 
-  bool hans = !wcscmp(L"/s", lpCmdLine);
+  bool hans = !wcscmp(L"/s", cmd);
   if (hans)
-    return install(L"hans", silent);
-  bool hant = !wcscmp(L"/t", lpCmdLine);
+    return install(L"hans", silent, per_user);
+  bool hant = !wcscmp(L"/t", cmd);
   if (hant)
-    return install(L"hant", silent);
-  bool hongkong = !wcscmp(L"/hk", lpCmdLine);
+    return install(L"hant", silent, per_user);
+  bool hongkong = !wcscmp(L"/hk", cmd);
   if (hongkong)
-    return install(L"hongkong", silent);
-  bool macau = !wcscmp(L"/mc", lpCmdLine);
+    return install(L"hongkong", silent, per_user);
+  bool macau = !wcscmp(L"/mc", cmd);
   if (macau)
-    return install(L"macau", silent);
-  bool singapore = !wcscmp(L"/sg", lpCmdLine);
+    return install(L"macau", silent, per_user);
+  bool singapore = !wcscmp(L"/sg", cmd);
   if (singapore)
-    return install(L"singapore", silent);
-  bool installing = !wcscmp(L"/i", lpCmdLine);
-  return CustomInstall(installing);
+    return install(L"singapore", silent, per_user);
+  bool installing = !wcscmp(L"/i", cmd);
+  return CustomInstall(installing, per_user);
 }
 
 // https://learn.microsoft.com/zh-cn/windows/win32/api/securitybaseapi/nf-securitybaseapi-checktokenmembership
@@ -288,7 +306,7 @@ bool IsProcAdmin() {
   return (b);
 }
 
-int RestartAsAdmin(LPTSTR lpCmdLine) {
+int RestartAsAdmin(LPCTSTR lpCmdLine) {
   SHELLEXECUTEINFO execInfo{0};
   TCHAR path[MAX_PATH];
   GetModuleFileName(GetModuleHandle(NULL), path, _countof(path));

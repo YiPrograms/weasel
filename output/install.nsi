@@ -18,14 +18,21 @@ Unicode true
 !define WEASEL_BUILD 0
 !endif
 
+!ifdef PER_USER
+!define INSTALL_SUFFIX "-user"
+!define WEASEL_ROOT $INSTDIR\weasel-${PRODUCT_VERSION}
+!else
+!define INSTALL_SUFFIX ""
 !define WEASEL_ROOT $INSTDIR\weasel-${WEASEL_VERSION}
+!endif
+
 !define REG_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
 
 ; The name of the installer
 Name "小狼毫 ${WEASEL_VERSION}"
 
 ; The file to write
-OutFile "archives\weasel-${PRODUCT_VERSION}-installer.exe"
+OutFile "archives\weasel-${PRODUCT_VERSION}${INSTALL_SUFFIX}-installer.exe"
 
 VIProductVersion "${WEASEL_VERSION}.${WEASEL_BUILD}"
 VIAddVersionKey /LANG=2052 "ProductName" "小狼毫"
@@ -40,7 +47,11 @@ SetCompressor /SOLID lzma
 
 
 ; Request application privileges for Windows Vista
+!ifdef PER_USER
+RequestExecutionLevel user
+!else
 RequestExecutionLevel admin
+!endif
 
 ;--------------------------------
 
@@ -121,8 +132,15 @@ toquit:
     Quit
   ${EndIf}
 
+!ifdef PER_USER
+  SetShellVarContext current
+  ReadRegStr $R0 HKCU "Software\Rime\Weasel" "InstallDir"
+  StrCmp $R0 "" 0 scope_done
+  StrCpy $INSTDIR "$LOCALAPPDATA\Rime"
+!else
+  SetShellVarContext all
   ReadRegStr $R0 HKLM "Software\Rime\Weasel" "InstallDir"
-  StrCmp $R0 "" 0 skip
+  StrCmp $R0 "" 0 scope_done
   ; The default installation directory
   ; install x64 build for NativeARM64_WINDOWS11 and NativeAMD64_WINDOWS11
   ${If} ${AtLeastWin11} ; Windows 11 and above
@@ -141,8 +159,9 @@ toquit:
       StrCpy $INSTDIR "$PROGRAMFILES\Rime"
     ${Endif}
   ${Endif}
-skip:
-  ReadRegStr $R0 HKLM \
+!endif
+scope_done:
+  ReadRegStr $R0 SHCTX \
   "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel" \
   "UninstallString"
   StrCmp $R0 "" done
@@ -154,7 +173,7 @@ skip:
 
 uninst:
   ; Backup data directory from previous installation, user files may exist
-  ReadRegStr $R1 HKLM SOFTWARE\Rime\Weasel "WeaselRoot"
+  ReadRegStr $R1 SHCTX SOFTWARE\Rime\Weasel "WeaselRoot"
   StrCmp $R1 "" call_uninstaller
   IfFileExists $R1\data\*.* 0 call_uninstaller
   CreateDirectory $TEMP\weasel-backup
@@ -162,17 +181,25 @@ uninst:
 
 call_uninstaller:
   ExecWait '"$R1\WeaselServer.exe" /quit'
+!ifdef PER_USER
+  ExecWait '"$R1\WeaselSetup.exe" /u /user'
+!else
   ExecWait '"$R1\WeaselSetup.exe" /u'
+!endif
   ; Remove registry keys
-  DeleteRegKey HKLM SOFTWARE\Rime
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
+!ifdef PER_USER
+  DeleteRegKey SHCTX SOFTWARE\Rime\Weasel
+!else
+  DeleteRegKey SHCTX SOFTWARE\Rime
+!endif
+  DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
   ; don't redirect on 64 bit system for auto run setting
   ${If} ${IsNativeARM64}
     SetRegView 64
   ${ElseIf} ${IsNativeAMD64}
     SetRegView 64
   ${Endif}
-  DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselServer"
+  DeleteRegValue SHCTX "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselServer"
   ; recover back to 32bit view
   SetRegView 32
   ; Remove files and uninstaller
@@ -184,7 +211,6 @@ call_uninstaller:
   RMDir   "$R1\data\preview"
   RMDir   "$R1\data"
   RMDir   "$R1"
-  SetShellVarContext all
   Delete  "$SMPROGRAMS\$(DISPLAYNAME)\*.*"
   RMDir  "$SMPROGRAMS\$(DISPLAYNAME)"
   ; Prompt reboot
@@ -196,7 +222,7 @@ FunctionEnd
 
 ; Registry key to check for directory (so if you install again, it will
 ; overwrite the old one automatically)
-InstallDirRegKey HKLM "Software\Rime\Weasel" "InstallDir"
+; Installation directory is selected in .onInit according to install scope.
 
 ; The stuff to install
 Section "Weasel"
@@ -206,7 +232,7 @@ Section "Weasel"
   ; Write the new installation path into the registry
   ; redirect on 64 bit system
   ; HKLM SOFTWARE\WOW6432Node\Rime\Weasel "InstallDir" "$INSTDIR"
-  WriteRegStr HKLM SOFTWARE\Rime\Weasel "InstallDir" "$INSTDIR"
+  WriteRegStr SHCTX SOFTWARE\Rime\Weasel "InstallDir" "$INSTDIR"
 
   ; Reset INSTDIR for the new version
   StrCpy $INSTDIR "${WEASEL_ROOT}"
@@ -236,6 +262,10 @@ program_files:
   File "rime-install-config.bat"
   File "start_service.bat"
   File "stop_service.bat"
+!ifdef PER_USER
+  File "repair-user-ime.ps1"
+  File "repair-user-ime.cmd"
+!endif
   File "weasel.dll"
   ${If} ${RunningX64}
     File "weaselx64.dll"
@@ -305,18 +335,25 @@ program_files:
   IfErrors +2 0
   StrCpy $R2 "/t"
 
-  ExecWait '"$INSTDIR\WeaselSetup.exe" $R2'
+!ifdef PER_USER
+  StrCpy $R2 "$R2 /user"
+!endif
+  ExecWait '"$INSTDIR\WeaselSetup.exe" $R2' $R3
+  IntCmp $R3 0 setup_ok
+  MessageBox MB_OK|MB_ICONSTOP "Weasel input method registration failed (exit code $R3)."
+  Abort
+setup_ok:
 
   ; Write the uninstall keys for Windows
-  WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayName" "$(DISPLAYNAME)"
-  WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayIcon" '"$INSTDIR\WeaselServer.exe"'
-  WriteRegStr HKLM "${REG_UNINST_KEY}" "DisplayVersion" "${WEASEL_VERSION}.${WEASEL_BUILD}"
-  WriteRegStr HKLM "${REG_UNINST_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
-  WriteRegStr HKLM "${REG_UNINST_KEY}" "Publisher" "式恕堂"
-  WriteRegStr HKLM "${REG_UNINST_KEY}" "URLInfoAbout" "https://rime.im/"
-  WriteRegStr HKLM "${REG_UNINST_KEY}" "HelpLink" "https://rime.im/docs/"
-  WriteRegDWORD HKLM "${REG_UNINST_KEY}" "NoModify" 1
-  WriteRegDWORD HKLM "${REG_UNINST_KEY}" "NoRepair" 1
+  WriteRegStr SHCTX "${REG_UNINST_KEY}" "DisplayName" "$(DISPLAYNAME)"
+  WriteRegStr SHCTX "${REG_UNINST_KEY}" "DisplayIcon" '"$INSTDIR\WeaselServer.exe"'
+  WriteRegStr SHCTX "${REG_UNINST_KEY}" "DisplayVersion" "${WEASEL_VERSION}.${WEASEL_BUILD}"
+  WriteRegStr SHCTX "${REG_UNINST_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
+  WriteRegStr SHCTX "${REG_UNINST_KEY}" "Publisher" "式恕堂"
+  WriteRegStr SHCTX "${REG_UNINST_KEY}" "URLInfoAbout" "https://rime.im/"
+  WriteRegStr SHCTX "${REG_UNINST_KEY}" "HelpLink" "https://rime.im/docs/"
+  WriteRegDWORD SHCTX "${REG_UNINST_KEY}" "NoModify" 1
+  WriteRegDWORD SHCTX "${REG_UNINST_KEY}" "NoRepair" 1
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   ; run as user...
@@ -335,11 +372,16 @@ program_files:
     SetRegView 64
   ${Endif}
   ; Write autorun key
-  WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselServer" "$INSTDIR\WeaselServer.exe"
+  WriteRegStr SHCTX "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselServer" "$INSTDIR\WeaselServer.exe"
   ; Start WeaselServer
   Exec "$INSTDIR\WeaselServer.exe"
 
   ; option CheckForUpdates
+!ifdef PER_USER
+  ; The shared appcast points to the machine-wide installer. Keep automatic
+  ; updates disabled; manual update opens the releases page for the user build.
+  WriteRegStr HKCU "Software\Rime\Weasel\Updates" "CheckForUpdates" "0"
+!else
   IfSilent DisableAutoCheckUpdate
   MessageBox MB_YESNO|MB_ICONINFORMATION "$(AUTOCHKUPDATE)" IDYES EnableAutoCheckUpdate
   DisableAutoCheckUpdate:
@@ -348,6 +390,7 @@ program_files:
   EnableAutoCheckUpdate:
   WriteRegStr HKCU "Software\Rime\Weasel\Updates" "CheckForUpdates" "1"
   end:
+!endif
 
   ; Prompt reboot
   StrCmp $0 "Upgrade" 0 +2
@@ -357,7 +400,6 @@ SectionEnd
 
 ; Optional section (can be disabled by the user)
 Section "Start Menu Shortcuts"
-  SetShellVarContext all
   CreateDirectory "$SMPROGRAMS\$(DISPLAYNAME)"
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORMANUAL).lnk" "$INSTDIR\README.txt"
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORSETTING).lnk" "$INSTDIR\WeaselDeployer.exe" "" "$SYSDIR\shell32.dll" 21
@@ -368,7 +410,12 @@ Section "Start Menu Shortcuts"
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORUSERFOLDER).lnk" "$INSTDIR\WeaselServer.exe" "/userdir" "$SYSDIR\shell32.dll" 126
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORAPPFOLDER).lnk" "$INSTDIR\WeaselServer.exe" "/weaseldir" "$SYSDIR\shell32.dll" 19
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORUPDATER).lnk" "$INSTDIR\WeaselServer.exe" "/update" "$SYSDIR\shell32.dll" 13
+!ifdef PER_USER
+  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORSETUP).lnk" "$INSTDIR\WeaselSetup.exe" "/user" "$SYSDIR\shell32.dll" 162
+  CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\Repair current-user IME.lnk" "$INSTDIR\repair-user-ime.cmd" "" "$SYSDIR\shell32.dll" 162
+!else
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORSETUP).lnk" "$INSTDIR\WeaselSetup.exe" "" "$SYSDIR\shell32.dll" 162
+!endif
   CreateShortCut "$SMPROGRAMS\$(DISPLAYNAME)\$(LNKFORUNINSTALL).lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\uninstall.exe" 0
 
 SectionEnd
@@ -377,22 +424,38 @@ SectionEnd
 
 ; Uninstaller
 
+Function un.onInit
+!ifdef PER_USER
+  SetShellVarContext current
+!else
+  SetShellVarContext all
+!endif
+FunctionEnd
+
 Section "Uninstall"
 
   ExecWait '"$INSTDIR\WeaselServer.exe" /quit'
 
+!ifdef PER_USER
+  ExecWait '"$INSTDIR\WeaselSetup.exe" /u /user'
+!else
   ExecWait '"$INSTDIR\WeaselSetup.exe" /u'
+!endif
 
   ; Remove registry keys
-  DeleteRegKey HKLM SOFTWARE\Rime
-  DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
+!ifdef PER_USER
+  DeleteRegKey SHCTX SOFTWARE\Rime\Weasel
+!else
+  DeleteRegKey SHCTX SOFTWARE\Rime
+!endif
+  DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\Weasel"
   ; don't redirect on 64 bit system for auto run setting
   ${If} ${IsNativeARM64}
     SetRegView 64
   ${ElseIf} ${IsNativeAMD64}
     SetRegView 64
   ${Endif}
-  DeleteRegValue HKLM "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselServer"
+  DeleteRegValue SHCTX "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselServer"
 
   ; Remove files and uninstaller
   SetOutPath $TEMP

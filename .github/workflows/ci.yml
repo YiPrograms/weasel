@@ -6,7 +6,11 @@ on:
       - '*'
     tags:
       - '[0-9]+.*'
+    paths-ignore:
+      - '.github/workflows/tsf-prebuilt.yml'
   pull_request:
+    paths-ignore:
+      - '.github/workflows/tsf-prebuilt.yml'
   workflow_dispatch:
 
 jobs:
@@ -40,6 +44,7 @@ jobs:
       BOOST_ROOT: ${{ github.workspace }}\deps\boost_1_84_0
       SDKVER: 10.0.19041.0
     strategy:
+      fail-fast: false
       matrix:
         variant: [msbuild, xmake]
     steps:
@@ -143,6 +148,483 @@ jobs:
             .\build.bat arm64 installer
           } else {
             .\xbuild.bat arm64 installer
+          }
+
+      - name: Unsigned per-user TSF comparison
+        if: matrix.variant == 'msbuild' && !startsWith(github.ref, 'refs/tags/')
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $tipPath = 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}'
+          $userProfilePath = 'HKCU:\Control Panel\International\User Profile\zh-Hant-TW'
+          $tipName = '0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}'
+
+          Write-Host 'phase=unsigned-seed-language-profile'
+          $userProfileRoot = 'HKCU:\Control Panel\International\User Profile'
+          New-Item -Path $userProfileRoot -Force | Out-Null
+          New-ItemProperty `
+            -Path $userProfileRoot `
+            -Name 'Languages' `
+            -PropertyType MultiString `
+            -Value @('zh-Hant-TW') `
+            -Force | Out-Null
+
+          Write-Host 'phase=unsigned-check-signatures'
+          foreach ($dll in @('.\output\weasel.dll', '.\output\weaselx64.dll')) {
+            $signature = Get-AuthenticodeSignature $dll
+            Write-Host "Unsigned baseline signature ${dll}: $($signature.Status)"
+            if ($signature.Status -eq 'Valid') {
+              throw "Unsigned baseline is unexpectedly signed: $dll"
+            }
+          }
+
+          Write-Host 'phase=unsigned-clear-stale-registration'
+          Remove-Item $tipPath -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-ItemProperty `
+            -Path $userProfilePath `
+            -Name $tipName `
+            -ErrorAction SilentlyContinue
+
+          Write-Host 'phase=unsigned-run-weasel-setup'
+          $setup = Start-Process `
+            -FilePath '.\output\WeaselSetup.exe' `
+            -ArgumentList @('/t', '/user') `
+            -PassThru
+          if (-not $setup.WaitForExit(90000)) {
+            Stop-Process -Id $setup.Id -Force -ErrorAction SilentlyContinue
+            if (Test-Path "$env:TEMP\weasel-register.log") {
+              Get-Content "$env:TEMP\weasel-register.log"
+            }
+            throw 'Unsigned WeaselSetup /t /user timed out.'
+          }
+          if ($setup.ExitCode -ne 0) {
+            if (Test-Path "$env:TEMP\weasel-register.log") {
+              Get-Content "$env:TEMP\weasel-register.log"
+            }
+            throw "Unsigned WeaselSetup /t /user failed with exit code $($setup.ExitCode)"
+          }
+
+          $tipImmediatelyPresent = Test-Path $tipPath
+          $profile = Get-ItemProperty -Path $userProfilePath -ErrorAction SilentlyContinue
+          $profileImmediatelyPresent = $null -ne $profile -and $null -ne $profile.$tipName
+          Write-Host "Unsigned TIP immediately after setup: $tipImmediatelyPresent"
+          Write-Host "Unsigned User Profile immediately after setup: $profileImmediatelyPresent"
+
+          Write-Host 'phase=unsigned-language-list-probe'
+          $probeOut = Join-Path $env:TEMP 'weasel-unsigned-language-list.txt'
+          $probeErr = Join-Path $env:TEMP 'weasel-unsigned-language-list.err.txt'
+          Remove-Item $probeOut, $probeErr -Force -ErrorAction SilentlyContinue
+          $probeCommand = 'Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }'
+          $encodedProbe = [Convert]::ToBase64String(
+            [Text.Encoding]::Unicode.GetBytes($probeCommand)
+          )
+          $probe = Start-Process `
+            -FilePath 'powershell.exe' `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedProbe) `
+            -RedirectStandardOutput $probeOut `
+            -RedirectStandardError $probeErr `
+            -PassThru
+          if (-not $probe.WaitForExit(20000)) {
+            Write-Warning 'Unsigned Get-WinUserLanguageList timed out on the hosted runner.'
+            Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue
+          } elseif ($probe.ExitCode -ne 0) {
+            Write-Warning "Unsigned Get-WinUserLanguageList exited with $($probe.ExitCode)."
+          }
+
+          $probeText = ''
+          if (Test-Path $probeOut) {
+            $probeText = Get-Content $probeOut -Raw
+            Write-Host 'Unsigned WinUserLanguageList output:'
+            Write-Host $probeText
+          }
+          if (Test-Path $probeErr) {
+            Get-Content $probeErr
+          }
+
+          $unsignedListed = ($probeText -split "`r?`n") -contains $tipName
+          $tipStillPresent = Test-Path $tipPath
+          $profileAfter = Get-ItemProperty -Path $userProfilePath -ErrorAction SilentlyContinue
+          $userProfileStillPresent = $null -ne $profileAfter -and $null -ne $profileAfter.$tipName
+          Write-Host "Unsigned language list contains Weasel: $unsignedListed"
+          Write-Host "Unsigned TIP after language-list probe: $tipStillPresent"
+          Write-Host "Unsigned User Profile after language-list probe: $userProfileStillPresent"
+
+          Write-Host 'phase=unsigned-tsf-api-probe'
+          $probeSource = Join-Path $env:TEMP 'weasel-tsf-probe.cpp'
+          $probeExe = Join-Path $env:TEMP 'weasel-tsf-probe.exe'
+          @'
+          #include <windows.h>
+          #include <msctf.h>
+          #include <cstdio>
+
+          int wmain() {
+            const CLSID weasel = {0xA3F4CDED, 0xB1E9, 0x41EE,
+                                  {0x9C, 0xA6, 0x7B, 0x4D, 0x0D, 0xE6, 0xCB, 0x0A}};
+            const GUID profile = {0x3D02CAB6, 0x2B8E, 0x4781,
+                                  {0xBA, 0x20, 0x1C, 0x92, 0x67, 0x52, 0x94, 0x67}};
+
+            HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            if (FAILED(hr))
+              return 2;
+
+            ITfInputProcessorProfileMgr* profiles = nullptr;
+            hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+                                  CLSCTX_INPROC_SERVER,
+                                  IID_ITfInputProcessorProfileMgr,
+                                  reinterpret_cast<void**>(&profiles));
+            if (FAILED(hr)) {
+              std::printf("CoCreateInstance(ProfileMgr) failed: 0x%08X\n",
+                           static_cast<unsigned>(hr));
+              CoUninitialize();
+              return 3;
+            }
+
+            TF_INPUTPROCESSORPROFILE direct = {};
+            const HRESULT get_hr = profiles->GetProfile(
+                TF_PROFILETYPE_INPUTPROCESSOR, 0x0404, weasel, profile, nullptr,
+                &direct);
+            std::printf("ProfileMgr GetProfile hr=0x%08X flags=0x%08X\n",
+                         static_cast<unsigned>(get_hr),
+                         SUCCEEDED(get_hr) ? direct.dwFlags : 0);
+
+            IEnumTfInputProcessorProfiles* enumerator = nullptr;
+            hr = profiles->EnumProfiles(0x0404, &enumerator);
+            if (FAILED(hr)) {
+              std::printf("ProfileMgr EnumProfiles failed: 0x%08X\n",
+                           static_cast<unsigned>(hr));
+              profiles->Release();
+              CoUninitialize();
+              return 4;
+            }
+
+            bool found = false;
+            unsigned count = 0;
+            TF_INPUTPROCESSORPROFILE item = {};
+            ULONG fetched = 0;
+            while (enumerator->Next(1, &item, &fetched) == S_OK) {
+              ++count;
+              std::printf(
+                  "Profile[%u] type=%lu langid=0x%04X "
+                  "clsid={%08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX} "
+                  "profile={%08lX-%04hX-%04hX-%02hhX%02hhX-%02hhX%02hhX%02hhX%02hhX%02hhX%02hhX} "
+                  "flags=0x%08lX\n",
+                  count,
+                  item.dwProfileType,
+                  item.langid,
+                  item.clsid.Data1, item.clsid.Data2, item.clsid.Data3,
+                  item.clsid.Data4[0], item.clsid.Data4[1], item.clsid.Data4[2],
+                  item.clsid.Data4[3], item.clsid.Data4[4], item.clsid.Data4[5],
+                  item.clsid.Data4[6], item.clsid.Data4[7],
+                  item.guidProfile.Data1, item.guidProfile.Data2,
+                  item.guidProfile.Data3, item.guidProfile.Data4[0],
+                  item.guidProfile.Data4[1], item.guidProfile.Data4[2],
+                  item.guidProfile.Data4[3], item.guidProfile.Data4[4],
+                  item.guidProfile.Data4[5], item.guidProfile.Data4[6],
+                  item.guidProfile.Data4[7],
+                  item.dwFlags);
+              if (item.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR &&
+                  IsEqualGUID(item.clsid, weasel) &&
+                  IsEqualGUID(item.guidProfile, profile)) {
+                found = true;
+                std::printf(
+                    "Weasel ProfileMgr profile enumerated: flags=0x%08X langid=0x%04X\n",
+                    item.dwFlags, item.langid);
+              }
+            }
+
+            std::printf("ProfileMgr profiles enumerated: %u\n", count);
+            enumerator->Release();
+            profiles->Release();
+            CoUninitialize();
+
+            std::printf("Weasel ProfileMgr profile found: %s\n",
+                         found ? "true" : "false");
+            return found ? 0 : 10;
+          }
+          '@ | Set-Content -Path $probeSource -Encoding ascii
+
+          & cl.exe /nologo /EHsc $probeSource /link ole32.lib uuid.lib /out:$probeExe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to compile TSF probe: $LASTEXITCODE"
+          }
+
+          & $probeExe
+          $unsignedTsfProbeExit = $LASTEXITCODE
+          Write-Host "Unsigned TSF API probe exit code: $unsignedTsfProbeExit"
+          # Not finding the unsigned profile is an expected comparison result,
+          # not a reason to skip the signed half of the A/B test.
+          $global:LASTEXITCODE = 0
+
+          if (Test-Path "$env:TEMP\weasel-register.log") {
+            Write-Host 'Unsigned registration trace:'
+            Get-Content "$env:TEMP\weasel-register.log"
+          }
+
+      - name: Signed per-user TSF smoke test
+        if: matrix.variant == 'msbuild' && !startsWith(github.ref, 'refs/tags/')
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          Write-Host 'phase=seed-language-profile'
+          $userProfileRoot = 'HKCU:\Control Panel\International\User Profile'
+          New-Item -Path $userProfileRoot -Force | Out-Null
+          New-ItemProperty `
+            -Path $userProfileRoot `
+            -Name 'Languages' `
+            -PropertyType MultiString `
+            -Value @('zh-Hant-TW') `
+            -Force | Out-Null
+
+          Write-Host 'phase=create-test-certificate-dotnet'
+          $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+          $subject = [System.Security.Cryptography.X509Certificates.X500DistinguishedName]::new(
+            'CN=Weasel CI Test IME'
+          )
+          $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+            $subject,
+            $rsa,
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+          )
+          $eku = [System.Security.Cryptography.OidCollection]::new()
+          [void]$eku.Add([System.Security.Cryptography.Oid]::new('1.3.6.1.5.5.7.3.3'))
+          $request.CertificateExtensions.Add(
+            [System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new(
+              $eku, $false
+            )
+          )
+          $request.CertificateExtensions.Add(
+            [System.Security.Cryptography.X509Certificates.X509KeyUsageExtension]::new(
+              [System.Security.Cryptography.X509Certificates.X509KeyUsageFlags]::DigitalSignature,
+              $true
+            )
+          )
+
+          $cert = $request.CreateSelfSigned(
+            [DateTimeOffset]::UtcNow.AddMinutes(-5),
+            [DateTimeOffset]::UtcNow.AddHours(2)
+          )
+          $pfxPassword = 'weasel-ci-test'
+          $pfxPath = Join-Path $env:TEMP 'weasel-ci-test.pfx'
+          [IO.File]::WriteAllBytes(
+            $pfxPath,
+            $cert.Export(
+              [System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx,
+              $pfxPassword
+            )
+          )
+
+          Write-Host 'phase=trust-test-certificate'
+          $publicCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(
+            $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+          )
+          foreach ($storeName in @('Root', 'TrustedPublisher')) {
+            Write-Host "phase=trust-$storeName-open"
+            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+              $storeName,
+              [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
+            )
+            $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+
+            Write-Host "phase=trust-$storeName-add"
+            $store.Add($publicCert)
+
+            Write-Host "phase=trust-$storeName-close"
+            $store.Close()
+          }
+          Write-Host 'phase=trust-test-certificate-done'
+
+          Write-Host 'phase=sign-tsf-dlls'
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName |
+            Select-Object -Last 1 -ExpandProperty FullName
+          if (-not $signtool) {
+            throw 'signtool.exe was not found.'
+          }
+          Write-Host "signtool=$signtool"
+
+          foreach ($dll in @('.\output\weasel.dll', '.\output\weaselx64.dll')) {
+            & $signtool sign /fd SHA256 /f $pfxPath /p $pfxPassword $dll
+            if ($LASTEXITCODE -ne 0) {
+              throw "signtool sign failed for ${dll}: $LASTEXITCODE"
+            }
+            & $signtool verify /pa /v $dll
+            if ($LASTEXITCODE -ne 0) {
+              throw "signtool verify failed for ${dll}: $LASTEXITCODE"
+            }
+          }
+
+          Write-Host 'phase=clear-stale-registration'
+          Remove-Item 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}' `
+            -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-ItemProperty `
+            -Path 'HKCU:\Control Panel\International\User Profile\zh-Hant-TW' `
+            -Name '0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}' `
+            -ErrorAction SilentlyContinue
+
+          Write-Host 'phase=run-weasel-setup'
+          $setup = Start-Process `
+            -FilePath '.\output\WeaselSetup.exe' `
+            -ArgumentList @('/t', '/user') `
+            -PassThru
+          if (-not $setup.WaitForExit(90000)) {
+            Stop-Process -Id $setup.Id -Force -ErrorAction SilentlyContinue
+            if (Test-Path "$env:TEMP\weasel-register.log") {
+              Get-Content "$env:TEMP\weasel-register.log"
+            }
+            throw 'WeaselSetup /t /user timed out.'
+          }
+          if ($setup.ExitCode -ne 0) {
+            if (Test-Path "$env:TEMP\weasel-register.log") {
+              Get-Content "$env:TEMP\weasel-register.log"
+            }
+            throw "WeaselSetup /t /user failed with exit code $($setup.ExitCode)"
+          }
+
+          $tipPath = 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}'
+          $userProfilePath = 'HKCU:\Control Panel\International\User Profile\zh-Hant-TW'
+          $tipName = '0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}'
+
+          if (-not (Test-Path $tipPath)) {
+            throw 'Per-user CTF TIP registration was not created.'
+          }
+          $profile = Get-ItemProperty -Path $userProfilePath -ErrorAction Stop
+          if ($null -eq $profile.$tipName) {
+            throw 'Weasel was not added to the current-user language profile.'
+          }
+          Write-Host "User Profile immediately after setup: $($profile.$tipName)"
+
+          Write-Host 'phase=language-list-probe'
+          $probeOut = Join-Path $env:TEMP 'weasel-language-list.txt'
+          $probeErr = Join-Path $env:TEMP 'weasel-language-list.err.txt'
+          $probeCommand = @"
+          Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }
+          "@
+          $encodedProbe = [Convert]::ToBase64String(
+            [Text.Encoding]::Unicode.GetBytes($probeCommand)
+          )
+          $probe = Start-Process `
+            -FilePath 'powershell.exe' `
+            -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedProbe) `
+            -RedirectStandardOutput $probeOut `
+            -RedirectStandardError $probeErr `
+            -PassThru
+          if (-not $probe.WaitForExit(20000)) {
+            Write-Warning 'Get-WinUserLanguageList timed out on the hosted runner.'
+            Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue
+          } elseif ($probe.ExitCode -ne 0) {
+            Write-Warning "Get-WinUserLanguageList exited with $($probe.ExitCode)."
+          }
+          if (Test-Path $probeOut) {
+            Get-Content $probeOut
+          }
+          if (Test-Path $probeErr) {
+            Get-Content $probeErr
+          }
+
+          Write-Host 'phase=post-probe-registry-check'
+          $tipStillPresent = Test-Path $tipPath
+          $profileAfter = Get-ItemProperty -Path $userProfilePath -ErrorAction Stop
+          $userProfileStillPresent = $null -ne $profileAfter.$tipName
+          Write-Host "TIP after language-list probe: $tipStillPresent"
+          Write-Host "User Profile entry after language-list probe: $userProfileStillPresent"
+
+          Write-Host 'phase=signed-tsf-api-probe'
+          $probeExe = Join-Path $env:TEMP 'weasel-tsf-probe.exe'
+          & $probeExe
+          $signedTsfProbeExit = $LASTEXITCODE
+          Write-Host "Signed TSF API probe exit code: $signedTsfProbeExit"
+          # A signed HKCU-only miss is the experiment result, not the end of
+          # the control test.
+          $global:LASTEXITCODE = 0
+
+          Write-Host 'phase=machine-registration-control'
+          $env:TEXTSERVICE_PROFILE = 'hant'
+          & "$env:WINDIR\System32\regsvr32.exe" /s .\output\weaselx64.dll
+          $machineRegisterExit = $LASTEXITCODE
+          Remove-Item Env:TEXTSERVICE_PROFILE -ErrorAction SilentlyContinue
+          Write-Host "Machine regsvr32 exit code: $machineRegisterExit"
+
+          if ($machineRegisterExit -eq 0) {
+            & $probeExe
+            $machineTsfProbeExit = $LASTEXITCODE
+            Write-Host "Machine regsvr32-only TSF API probe exit code: $machineTsfProbeExit"
+            $global:LASTEXITCODE = 0
+          } else {
+            Write-Warning 'Machine regsvr32 control could not be installed on this runner.'
+          }
+
+          Write-Host 'phase=full-machine-install-control'
+          $machineSetup = Start-Process `
+            -FilePath '.\output\WeaselSetup.exe' `
+            -ArgumentList @('/t') `
+            -PassThru
+          if (-not $machineSetup.WaitForExit(90000)) {
+            Stop-Process -Id $machineSetup.Id -Force -ErrorAction SilentlyContinue
+            throw 'Full machine WeaselSetup /t timed out.'
+          }
+          Write-Host "Full machine WeaselSetup exit code: $($machineSetup.ExitCode)"
+
+          if ($machineSetup.ExitCode -eq 0) {
+            & $probeExe
+            $fullMachineTsfProbeExit = $LASTEXITCODE
+            Write-Host "Full machine TSF API probe exit code: $fullMachineTsfProbeExit"
+            $global:LASTEXITCODE = 0
+
+            Write-Host 'phase=dump-machine-tip-registry'
+            $machineTip = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}'
+            if (Test-Path $machineTip) {
+              Get-ChildItem -Path $machineTip -Recurse | ForEach-Object {
+                Write-Host "REGKEY $($_.Name)"
+                try {
+                  $props = Get-ItemProperty -Path $_.PSPath
+                  $props.PSObject.Properties |
+                    Where-Object { $_.Name -notlike 'PS*' } |
+                    ForEach-Object {
+                      Write-Host ("  {0} ({1}) = {2}" -f $_.Name, $_.TypeNameOfValue, $_.Value)
+                    }
+                } catch {
+                  Write-Host "  <read failed: $($_.Exception.Message)>"
+                }
+              }
+            } else {
+              Write-Host 'Machine TIP registry key is absent.'
+            }
+
+            Write-Host 'phase=dump-user-tip-registry'
+            $userTip = 'HKCU:\Software\Microsoft\CTF\TIP\{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}'
+            if (Test-Path $userTip) {
+              Get-ChildItem -Path $userTip -Recurse | ForEach-Object {
+                Write-Host "USERREGKEY $($_.Name)"
+                try {
+                  $props = Get-ItemProperty -Path $_.PSPath
+                  $props.PSObject.Properties |
+                    Where-Object { $_.Name -notlike 'PS*' } |
+                    ForEach-Object {
+                      Write-Host ("  {0} ({1}) = {2}" -f $_.Name, $_.TypeNameOfValue, $_.Value)
+                    }
+                } catch {
+                  Write-Host "  <read failed: $($_.Exception.Message)>"
+                }
+              }
+            } else {
+              Write-Host 'User TIP registry key is absent.'
+            }
+          } else {
+            Write-Warning 'Full machine install control failed.'
+          }
+
+          if (Test-Path "$env:TEMP\weasel-register.log") {
+            Write-Host 'Registration trace:'
+            Get-Content "$env:TEMP\weasel-register.log"
+          }
+
+          if (-not $tipStillPresent -or -not $userProfileStillPresent) {
+            throw 'Signed per-user TSF registration did not survive the language-list probe.'
           }
 
       - name: Compress Debug Symbols

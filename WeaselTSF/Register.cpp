@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <cstdarg>
 #include "Register.h"
 #include <strsafe.h>
 #include <WeaselUtility.h>
@@ -9,6 +10,61 @@ static const char c_szInfoKeyPrefix[] = "CLSID\\";
 static const char c_szTipKeyPrefix[] = "Software\\Microsft\\CTF\\TIP\\";
 static const char c_szInProcSvr32[] = "InprocServer32";
 static const char c_szModelName[] = "ThreadingModel";
+static const char c_szUserClassesRoot[] = "Software\\Classes";
+static const WCHAR c_szUserTipRoot[] = L"Software\\Microsoft\\CTF\\TIP";
+static const WCHAR c_szUserCategoryRoot[] =
+    L"Software\\Microsoft\\CTF\\Categories\\Category\\Item";
+
+static void TraceRegistration(const wchar_t* format, ...) {
+  WCHAR path[MAX_PATH] = {};
+  if (!GetTempPathW(ARRAYSIZE(path), path))
+    return;
+  if (FAILED(StringCchCatW(path, ARRAYSIZE(path), L"weasel-register.log")))
+    return;
+
+  WCHAR message[1024] = {};
+  va_list args;
+  va_start(args, format);
+  StringCchVPrintfW(message, ARRAYSIZE(message), format, args);
+  va_end(args);
+
+  HANDLE file =
+      CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                  NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (file == INVALID_HANDLE_VALUE)
+    return;
+
+  char utf8[4096] = {};
+  const int length = WideCharToMultiByte(CP_UTF8, 0, message, -1, utf8,
+                                         ARRAYSIZE(utf8), NULL, NULL);
+  if (length > 1) {
+    DWORD written;
+    WriteFile(file, utf8, length - 1, &written, NULL);
+    static const char newline[] = "\r\n";
+    WriteFile(file, newline, sizeof(newline) - 1, &written, NULL);
+  }
+  CloseHandle(file);
+}
+
+static bool IsPerUserRegistration() {
+  WCHAR value[2];
+  return GetEnvironmentVariableW(L"WEASEL_PER_USER", value, _countof(value)) >
+         0;
+}
+
+static BOOL OpenClassesRoot(HKEY* root, bool* close_root) {
+  if (!IsPerUserRegistration()) {
+    *root = HKEY_CLASSES_ROOT;
+    *close_root = false;
+    return TRUE;
+  }
+
+  DWORD disposition;
+  *close_root = true;
+  return RegCreateKeyExA(HKEY_CURRENT_USER, c_szUserClassesRoot, 0, NULL,
+                         REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, root,
+                         &disposition) == ERROR_SUCCESS;
+}
 
 HKL FindIME(LANGID langid) {
   HKL hKL = NULL;
@@ -92,6 +148,132 @@ BOOL RegisterProfiles() {
   return TRUE;
 }
 
+static bool GuidToStringW(REFGUID guid, std::wstring& value) {
+  WCHAR buffer[64];
+  if (StringFromGUID2(guid, buffer, ARRAYSIZE(buffer)) <= 0)
+    return false;
+  value = buffer;
+  return true;
+}
+
+static bool SetStringValueW(HKEY key,
+                            LPCWSTR name,
+                            const std::wstring& value,
+                            DWORD type = REG_SZ) {
+  return RegSetValueExW(
+             key, name, 0, type, reinterpret_cast<const BYTE*>(value.c_str()),
+             static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) ==
+         ERROR_SUCCESS;
+}
+
+static bool SetDwordValueW(HKEY key, LPCWSTR name, DWORD value) {
+  return RegSetValueExW(key, name, 0, REG_DWORD,
+                        reinterpret_cast<const BYTE*>(&value),
+                        sizeof(value)) == ERROR_SUCCESS;
+}
+
+static bool CreateEmptyUserKey(const std::wstring& path) {
+  HKEY key;
+  DWORD disposition;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, NULL,
+                      REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &key,
+                      &disposition) != ERROR_SUCCESS)
+    return false;
+  RegCloseKey(key);
+  return true;
+}
+
+BOOL RegisterProfilesForCurrentUser() {
+  std::wstring clsid;
+  std::wstring profile_guid;
+  if (!GuidToStringW(c_clsidTextService, clsid) ||
+      !GuidToStringW(c_guidProfile, profile_guid))
+    return FALSE;
+
+  WCHAR selected_profile[100] = {};
+  std::wstring profile;
+  if (GetEnvironmentVariableW(L"TEXTSERVICE_PROFILE", selected_profile,
+                              ARRAYSIZE(selected_profile)) > 0)
+    profile = selected_profile;
+
+  BOOL hans_enable = (profile == L"hans");
+  BOOL hant_enable = (profile == L"hant");
+  BOOL hk_enable = (profile == L"hongkong");
+  BOOL macau_enable = (profile == L"macau");
+  BOOL sg_enable = (profile == L"singapore");
+  hans_enable = hans_enable || (!hant_enable && !hans_enable && !hk_enable &&
+                                !macau_enable && !sg_enable);
+
+  WCHAR icon_file[MAX_PATH] = {};
+  GetModuleFileNameW(g_hInst, icon_file, ARRAYSIZE(icon_file));
+  const auto description = get_weasel_ime_name();
+
+  const struct {
+    LANGID lang_id;
+    BOOL enable;
+    HKL substitute;
+  } profiles[] = {
+      {TEXTSERVICE_LANGID_HANS, hans_enable, FindIME(TEXTSERVICE_LANGID_HANS)},
+      {TEXTSERVICE_LANGID_HANT, hant_enable, FindIME(TEXTSERVICE_LANGID_HANT)},
+      {TEXTSERVICE_LANGID_HONGKONG, hk_enable, NULL},
+      {TEXTSERVICE_LANGID_MACAU, macau_enable, NULL},
+      {TEXTSERVICE_LANGID_SINGAPORE, sg_enable, NULL},
+  };
+
+  const std::wstring tip_root = std::wstring(c_szUserTipRoot) + L"\\" + clsid;
+  HKEY root_key;
+  DWORD disposition;
+  LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, tip_root.c_str(), 0, NULL,
+                                   REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL,
+                                   &root_key, &disposition);
+  TraceRegistration(L"TIP root status=%ld path=%s", status, tip_root.c_str());
+  if (status != ERROR_SUCCESS)
+    return FALSE;
+  SetDwordValueW(root_key, L"Enable", 1);
+  RegCloseKey(root_key);
+
+  for (const auto& item : profiles) {
+    WCHAR lang_id[16];
+    StringCchPrintfW(lang_id, ARRAYSIZE(lang_id), L"0x%08X", item.lang_id);
+    const std::wstring key_path =
+        tip_root + L"\\LanguageProfile\\" + lang_id + L"\\" + profile_guid;
+
+    HKEY key;
+    status = RegCreateKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0, NULL,
+                             REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &key,
+                             &disposition);
+    TraceRegistration(L"Profile key status=%ld path=%s", status,
+                      key_path.c_str());
+    if (status != ERROR_SUCCESS)
+      return FALSE;
+
+    bool ok = SetStringValueW(key, L"Description", description) &&
+              SetStringValueW(key, L"IconFile", icon_file) &&
+              SetDwordValueW(key, L"IconIndex", TEXTSERVICE_ICON_INDEX) &&
+              SetDwordValueW(key, L"Enable", item.enable ? 1 : 0);
+
+    if (item.substitute) {
+      WCHAR substitute[16];
+      StringCchPrintfW(
+          substitute, ARRAYSIZE(substitute), L"0x%08X",
+          static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(item.substitute)));
+      ok = ok && SetStringValueW(key, L"SubstituteLayout", substitute);
+    }
+    RegCloseKey(key);
+    if (!ok)
+      return FALSE;
+  }
+  return TRUE;
+}
+
+void UnregisterProfilesForCurrentUser() {
+  std::wstring clsid;
+  if (!GuidToStringW(c_clsidTextService, clsid))
+    return;
+  const std::wstring tip_root = std::wstring(c_szUserTipRoot) + L"\\" + clsid;
+  RegDeleteTreeW(HKEY_CURRENT_USER, tip_root.c_str());
+}
+
 void UnregisterProfiles() {
   CComPtr<ITfInputProcessorProfileMgr> pInputProcessorProfileMgr;
   if (FAILED(pInputProcessorProfileMgr.CoCreateInstance(
@@ -131,6 +313,45 @@ BOOL RegisterCategories() {
       return FALSE;
   }
   return TRUE;
+}
+
+BOOL RegisterCategoriesForCurrentUser() {
+  std::wstring clsid;
+  if (!GuidToStringW(c_clsidTextService, clsid))
+    return FALSE;
+
+  const std::wstring tip_root = std::wstring(c_szUserTipRoot) + L"\\" + clsid;
+  for (const auto& guid : SupportCategories0) {
+    std::wstring category;
+    if (!GuidToStringW(guid, category))
+      return FALSE;
+
+    if (!CreateEmptyUserKey(tip_root + L"\\Category\\Category\\" + category +
+                            L"\\" + clsid) ||
+        !CreateEmptyUserKey(tip_root + L"\\Category\\Item\\" + clsid + L"\\" +
+                            category) ||
+        !CreateEmptyUserKey(std::wstring(c_szUserCategoryRoot) + L"\\" +
+                            category + L"\\" + clsid)) {
+      TraceRegistration(L"Category registration failed: %s", category.c_str());
+      return FALSE;
+    }
+  }
+  return TRUE;
+}
+
+void UnregisterCategoriesForCurrentUser() {
+  std::wstring clsid;
+  if (!GuidToStringW(c_clsidTextService, clsid))
+    return;
+
+  for (const auto& guid : SupportCategories0) {
+    std::wstring category;
+    if (!GuidToStringW(guid, category))
+      continue;
+    const std::wstring path =
+        std::wstring(c_szUserCategoryRoot) + L"\\" + category + L"\\" + clsid;
+    RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str());
+  }
 }
 
 void UnregisterCategories() {
@@ -194,9 +415,11 @@ static LONG RecurseDeleteKeyA(HKEY hParentKey, LPCSTR lpszKey) {
 
 BOOL RegisterServer() {
   DWORD dw;
+  HKEY hClassesRoot;
   HKEY hKey;
   HKEY hSubKey;
   BOOL fRet;
+  bool closeClassesRoot;
   char achIMEKey[ARRAYSIZE(c_szInfoKeyPrefix) + CLSID_STRLEN];
   char achFileName[MAX_PATH];
 
@@ -205,7 +428,10 @@ BOOL RegisterServer() {
     return FALSE;
   memcpy(achIMEKey, c_szInfoKeyPrefix, sizeof(c_szInfoKeyPrefix) - 1);
 
-  if (fRet = RegCreateKeyExA(HKEY_CLASSES_ROOT, achIMEKey, 0, NULL,
+  if (!OpenClassesRoot(&hClassesRoot, &closeClassesRoot))
+    return FALSE;
+
+  if (fRet = RegCreateKeyExA(hClassesRoot, achIMEKey, 0, NULL,
                              REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey,
                              &dw) == ERROR_SUCCESS) {
     fRet &= RegSetValueExA(hKey, NULL, 0, REG_SZ, (BYTE*)TEXTSERVICE_DESC_A,
@@ -217,17 +443,21 @@ BOOL RegisterServer() {
 
 #ifdef _M_ARM64
       {
-        // On ARM64 we use ARM64X redirection DLL.
-        // When loaded, weasel.dll will be redirected to weaselARM64.dll on
-        // ARM64 processes, and weaselx64.dll on x64 processes.
-        //
-        // But GetModuleFileNameA will return the actual loaded DLL name aka
-        // weaselARM64.dll Rewrite the path to point to the redirector.
-
-        char wrapperPath[MAX_PATH];
-        StringCbCatA(achFileName, MAX_PATH, "\\..\\weasel.dll");
-        GetFullPathNameA(achFileName, MAX_PATH, wrapperPath, NULL);
-        memcpy(achFileName, wrapperPath, MAX_PATH);
+        // On ARM64, system-wide installation registers the ARM64X redirector
+        // copied as weasel.dll. Per-user installation keeps the packaged
+        // filename because the x86 weasel.dll lives in the same directory.
+        if (IsPerUserRegistration()) {
+          char* fileName = strrchr(achFileName, '\\');
+          if (fileName)
+            strcpy_s(fileName + 1,
+                     ARRAYSIZE(achFileName) - (fileName + 1 - achFileName),
+                     "weaselARM64X.dll");
+        } else {
+          char wrapperPath[MAX_PATH];
+          StringCbCatA(achFileName, MAX_PATH, "\\..\\weasel.dll");
+          GetFullPathNameA(achFileName, MAX_PATH, wrapperPath, NULL);
+          memcpy(achFileName, wrapperPath, MAX_PATH);
+        }
       }
 #endif
 
@@ -241,16 +471,27 @@ BOOL RegisterServer() {
     }
     RegCloseKey(hKey);
   }
+  if (closeClassesRoot)
+    RegCloseKey(hClassesRoot);
   return fRet;
 }
 
 void UnregisterServer() {
+  HKEY hClassesRoot;
+  bool closeClassesRoot;
   char achIMEKey[ARRAYSIZE(c_szInfoKeyPrefix) + CLSID_STRLEN];
   if (!CLSIDToStringA(c_clsidTextService,
                       achIMEKey + ARRAYSIZE(c_szInfoKeyPrefix) - 1))
     return;
   memcpy(achIMEKey, c_szInfoKeyPrefix, sizeof(c_szInfoKeyPrefix) - 1);
-  RecurseDeleteKeyA(HKEY_CLASSES_ROOT, achIMEKey);
+  if (!OpenClassesRoot(&hClassesRoot, &closeClassesRoot))
+    return;
+  RecurseDeleteKeyA(hClassesRoot, achIMEKey);
+
+  if (closeClassesRoot) {
+    RegCloseKey(hClassesRoot);
+    return;
+  }
 
   // On Windows 8, we need to manually delete the registry key for our TIP
   char tipKey[ARRAYSIZE(c_szTipKeyPrefix) + CLSID_STRLEN];

@@ -34,6 +34,12 @@ class WeaselServerApp {
   }
 
   static bool check_update() {
+    std::wstring install_dir;
+    if (RegGetStringValue(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel",
+                          L"InstallDir", install_dir) == ERROR_SUCCESS) {
+      return open(L"https://github.com/rime/weasel/releases/latest");
+    }
+
     // when checked manually, show testing versions too
     std::string feed_url = GetCustomResource("ManualUpdateFeedURL", "APPCAST");
     std::wstring channel{};

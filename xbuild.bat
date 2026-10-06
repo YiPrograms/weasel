@@ -200,6 +200,13 @@ if %build_installer% == 1 (
   /DPRODUCT_VERSION=%PRODUCT_VERSION% ^
   output\install.nsi
   if errorlevel 1 goto error
+  "%ProgramFiles(x86)%\NSIS\Bin\makensis.exe" ^
+  /DPER_USER ^
+  /DWEASEL_VERSION=%WEASEL_VERSION% ^
+  /DWEASEL_BUILD=%WEASEL_BUILD% ^
+  /DPRODUCT_VERSION=%PRODUCT_VERSION% ^
+  output\install.nsi
+  if errorlevel 1 goto error
 )
 goto end
 
