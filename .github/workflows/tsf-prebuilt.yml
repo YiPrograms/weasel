@@ -43,6 +43,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $src = Join-Path $env:GITHUB_WORKSPACE '.github\scripts\weasel-profile-probe.cpp'
+          $exe = Join-Path $env:TEMP 'weasel-profile-probe.exe'
 
           & cl.exe /nologo /EHsc $src /link ole32.lib uuid.lib advapi32.lib /out:$exe
           if ($LASTEXITCODE -ne 0) {
