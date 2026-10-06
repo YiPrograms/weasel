@@ -136,6 +136,11 @@ jobs:
               throw 'Standard-user per-user installer timed out.'
             }
             Write-Host "Standard-user installer exit code: $($installProcess.ExitCode)"
+            $registrationTrace = Join-Path $userTemp 'weasel-register.log'
+            if (Test-Path $registrationTrace) {
+              Write-Host '=== Standard-user Weasel registration trace ==='
+              Get-Content $registrationTrace
+            }
 
             $inspectOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-after-install.out'
             $inspectErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-after-install.err'
@@ -174,6 +179,14 @@ jobs:
               Write-Host '=== Standard-user activation stderr ==='
               Get-Content $activateErr
             }
+
+            $postActivateInspectOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-post-activation-inspect.out'
+            $postActivateInspectErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-post-activation-inspect.err'
+            $postActivateInspect = Start-Process -FilePath $probe -ArgumentList 'inspect' `
+              -Credential $credential -LoadUserProfile -Environment $childEnvironment -Wait -PassThru `
+              -RedirectStandardOutput $postActivateInspectOut -RedirectStandardError $postActivateInspectErr
+            Write-Host '=== Fresh ProfileMgr process after override-registration probe exited ==='
+            Get-Content $postActivateInspectOut
 
             $languageOut = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-language-list.out'
             $languageErr = Join-Path $env:RUNNER_TEMP 'tsf-standard-user-language-list.err'
