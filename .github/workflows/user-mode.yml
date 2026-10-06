@@ -1,0 +1,61 @@
+name: User-mode frontend
+
+on:
+  push:
+    branches:
+      - user-mode-input
+    paths:
+      - 'WeaselUserMode/**'
+      - 'WeaselIPC/**'
+      - 'include/**'
+      - 'WeaselTSF/KeyEvent.cpp'
+      - 'xmake.lua'
+      - '.github/workflows/user-mode.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    env:
+      boost_version: 1.84.0
+      BOOST_ROOT: ${{ github.workspace }}\deps\boost_1_84_0
+      SDKVER: 10.0.19041.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Boost
+        id: cache-boost
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BOOST_ROOT }}
+          key: ${{ runner.os }}-boost-${{ env.boost_version }}
+
+      - name: Install Boost headers
+        if: steps.cache-boost.outputs.cache-hit != 'true'
+        shell: cmd
+        run: install_boost.bat
+
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          sdk: ${{ env.SDKVER }}
+          arch: x64
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+
+      - name: Build WeaselUserMode
+        shell: cmd
+        run: |
+          xmake f -a x64 -m release --vs_sdkver=%SDKVER% -c
+          xmake build WeaselUserMode -vD
+
+      - name: Upload frontend
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-user-mode-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            .\output\WeaselUserMode.exe
+            .\output\WeaselUserMode.pdb
