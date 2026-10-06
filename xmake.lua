@@ -54,7 +54,7 @@ add_links("atls", "shell32", "advapi32", "gdi32", "user32", "uuid", "ole32")
 includes("WeaselIPC", "WeaselUI", "WeaselTSF")
 
 if is_arch("x64") or is_arch("x86") then
-  includes("RimeWithWeasel", "WeaselIPCServer", "WeaselServer", "WeaselDeployer")
+  includes("RimeWithWeasel", "WeaselIPCServer", "WeaselServer", "WeaselDeployer", "WeaselUserMode")
 end
 
 if is_arch("x86") then
