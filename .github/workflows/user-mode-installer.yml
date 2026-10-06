@@ -86,7 +86,7 @@ jobs:
         shell: cmd
         run: |
           xmake f -a x64 -m release --vs_sdkver=%SDKVER% -c
-          xmake WeaselUserMode
+          xmake build WeaselUserMode
 
       - name: Verify package inputs
         shell: pwsh
