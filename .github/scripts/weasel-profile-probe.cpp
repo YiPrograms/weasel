@@ -147,6 +147,25 @@ static void print_user_install_state() {
   RegCloseKey(key);
 }
 
+static void invalidate_tsf_assembly_cache() {
+  HMODULE msctf = LoadLibraryExW(L"msctf.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  std::printf("LoadLibraryEx(msctf.dll): %s\n", msctf ? "ok" : "failed");
+  if (!msctf)
+    return;
+
+  using InvalidAssemblyListCacheFn = HRESULT(WINAPI*)();
+  auto invalidate = reinterpret_cast<InvalidAssemblyListCacheFn>(
+      GetProcAddress(msctf, "TF_InvalidAssemblyListCacheIfExist"));
+  std::printf("GetProcAddress(TF_InvalidAssemblyListCacheIfExist): %s\n",
+              invalidate ? "ok" : "failed");
+  if (invalidate) {
+    HRESULT hr = invalidate();
+    std::printf("TF_InvalidAssemblyListCacheIfExist HRESULT: 0x%08X\n",
+                static_cast<unsigned>(hr));
+  }
+  FreeLibrary(msctf);
+}
+
 static void probe_hklm_override_registration(ITfInputProcessorProfileMgr* mgr) {
   std::puts("=== Probe official TSF registration with HKLM overridden to HKCU ===");
 
@@ -594,6 +613,16 @@ int wmain(int argc, wchar_t** argv) {
       argc > 1 && std::wcscmp(argv[1], L"inspect") == 0;
   const bool activate_mode =
       argc > 1 && std::wcscmp(argv[1], L"activate") == 0;
+  const bool invalidate_mode =
+      argc > 1 && std::wcscmp(argv[1], L"invalidate") == 0;
+
+  if (invalidate_mode) {
+    print_identity();
+    invalidate_tsf_assembly_cache();
+    mgr->Release();
+    CoUninitialize();
+    return 0;
+  }
 
   if (inspect_mode || activate_mode) {
     print_identity();
