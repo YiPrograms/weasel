@@ -1,7 +1,9 @@
 #include <windows.h>
 #include <msctf.h>
+#include <sddl.h>
 #include <cstdio>
 #include <cwchar>
+#include <string>
 
 static const GUID kWeaselClsid = {
     0xA3F4CDED, 0xB1E9, 0x41EE,
@@ -563,6 +565,51 @@ static void probe_user_activation(ITfInputProcessorProfileMgr* mgr) {
           nullptr, nullptr, nullptr, tip, 0);
       std::printf("QueryLayoutOrTipStringUserReg(default roots) HRESULT: 0x%08X\n",
                   static_cast<unsigned>(valid));
+
+      HANDLE token = nullptr;
+      std::wstring sid_string;
+      if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        DWORD size = 0;
+        GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+        if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && size > 0) {
+          BYTE* buffer = new BYTE[size];
+          if (GetTokenInformation(token, TokenUser, buffer, size, &size)) {
+            TOKEN_USER* token_user = reinterpret_cast<TOKEN_USER*>(buffer);
+            LPWSTR sid = nullptr;
+            if (ConvertSidToStringSidW(token_user->User.Sid, &sid)) {
+              sid_string = sid;
+              LocalFree(sid);
+            }
+          }
+          delete[] buffer;
+        }
+        CloseHandle(token);
+      }
+
+      const std::wstring hku_software =
+          sid_string.empty() ? L"" : std::wstring(L"HKEY_USERS\\") + sid_string + L"\\Software";
+      const std::wstring sid_software =
+          sid_string.empty() ? L"" : sid_string + L"\\Software";
+      const wchar_t* software_roots[4] = {
+          L"HKEY_CURRENT_USER\\Software",
+          L"HKCU\\Software",
+          hku_software.empty() ? nullptr : hku_software.c_str(),
+          sid_software.empty() ? nullptr : sid_software.c_str(),
+      };
+      const char* software_labels[4] = {
+          "HKEY_CURRENT_USER\\Software",
+          "HKCU\\Software",
+          "HKEY_USERS\\<sid>\\Software",
+          "<sid>\\Software",
+      };
+      for (int i = 0; i < 4; ++i) {
+        if (!software_roots[i])
+          continue;
+        HRESULT custom_valid = query_layout_or_tip_user_reg(
+            nullptr, nullptr, software_roots[i], tip, 0);
+        std::printf("QueryLayoutOrTipStringUserReg(software=%s) HRESULT: 0x%08X\n",
+                    software_labels[i], static_cast<unsigned>(custom_valid));
+      }
     }
     if (install_layout_or_tip_user_reg) {
       BOOL installed_user_reg = install_layout_or_tip_user_reg(
