@@ -52,6 +52,12 @@ jobs:
           static const GUID kWeaselProfile = {
               0x3D02CAB6, 0x2B8E, 0x4781,
               {0xBA, 0x20, 0x1C, 0x92, 0x67, 0x52, 0x94, 0x67}};
+          static const GUID kBopomofoClsid = {
+              0xB115690A, 0xEA02, 0x48D5,
+              {0xA2, 0x31, 0xE3, 0x57, 0x8D, 0x2F, 0xDF, 0x80}};
+          static const GUID kBopomofoProfile = {
+              0xB2F9C502, 0x1742, 0x11D4,
+              {0x97, 0x90, 0x00, 0x80, 0xC8, 0x82, 0x68, 0x7E}};
 
           static void print_guid(const GUID& g) {
             std::printf(
@@ -300,6 +306,46 @@ jobs:
                 thread_mgr->Release();
               }
               processor->Release();
+            }
+
+            ITfTextInputProcessor* control_processor = nullptr;
+            HRESULT create_control_processor = CoCreateInstance(
+                kBopomofoClsid, nullptr, CLSCTX_INPROC_SERVER,
+                IID_ITfTextInputProcessor,
+                reinterpret_cast<void**>(&control_processor));
+            std::printf("Bopomofo COM create ITfTextInputProcessor HRESULT: 0x%08X\n",
+                        static_cast<unsigned>(create_control_processor));
+            if (control_processor) {
+              ITfThreadMgr* control_thread_mgr = nullptr;
+              HRESULT create_control_thread_mgr = CoCreateInstance(
+                  CLSID_TF_ThreadMgr, nullptr, CLSCTX_INPROC_SERVER,
+                  IID_ITfThreadMgr,
+                  reinterpret_cast<void**>(&control_thread_mgr));
+              std::printf("Bopomofo ITfThreadMgr CoCreate HRESULT: 0x%08X\n",
+                          static_cast<unsigned>(create_control_thread_mgr));
+              if (control_thread_mgr) {
+                TfClientId control_client_id = TF_CLIENTID_NULL;
+                HRESULT activate_control_thread_mgr =
+                    control_thread_mgr->Activate(&control_client_id);
+                std::printf("Bopomofo ITfThreadMgr Activate HRESULT: 0x%08X client_id=%lu\n",
+                            static_cast<unsigned>(activate_control_thread_mgr),
+                            static_cast<unsigned long>(control_client_id));
+                if (SUCCEEDED(activate_control_thread_mgr)) {
+                  HRESULT activate_control_processor = control_processor->Activate(
+                      control_thread_mgr, control_client_id);
+                  std::printf("Bopomofo ITfTextInputProcessor Activate HRESULT: 0x%08X\n",
+                              static_cast<unsigned>(activate_control_processor));
+                  if (SUCCEEDED(activate_control_processor)) {
+                    HRESULT deactivate_control_processor =
+                        control_processor->Deactivate();
+                    std::printf("Bopomofo ITfTextInputProcessor Deactivate HRESULT: 0x%08X\n",
+                                static_cast<unsigned>(deactivate_control_processor));
+                  }
+                  control_thread_mgr->Deactivate();
+                }
+                control_thread_mgr->Release();
+              }
+              control_processor->Release();
             }
 
             std::puts("=== ProfileMgr after EnableLanguageProfile ===");
