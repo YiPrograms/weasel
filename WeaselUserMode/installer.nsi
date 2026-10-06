@@ -58,8 +58,7 @@ Section "Weasel User Mode" SecMain
   ; MOD_ALT | MOD_CONTROL, VK_SPACE. These can be changed later without admin.
   WriteRegDWORD HKCU "${USERMODE_KEY}" "ToggleModifiers" 3
   WriteRegDWORD HKCU "${USERMODE_KEY}" "ToggleVirtualKey" 0x20
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" \
-    "WeaselUserMode" '"$INSTDIR\WeaselUserMode.exe"'
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselUserMode" '"$INSTDIR\WeaselUserMode.exe"'
 
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "Weasel User Mode"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
@@ -71,12 +70,9 @@ Section "Weasel User Mode" SecMain
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair" 1
 
   CreateDirectory "$SMPROGRAMS\Weasel User Mode"
-  CreateShortCut "$SMPROGRAMS\Weasel User Mode\Weasel User Mode.lnk" \
-    "$INSTDIR\WeaselUserMode.exe"
-  CreateShortCut "$SMPROGRAMS\Weasel User Mode\Weasel Settings.lnk" \
-    "$INSTDIR\WeaselDeployer.exe"
-  CreateShortCut "$SMPROGRAMS\Weasel User Mode\Uninstall.lnk" \
-    "$INSTDIR\Uninstall.exe"
+  CreateShortCut "$SMPROGRAMS\Weasel User Mode\Weasel User Mode.lnk" "$INSTDIR\WeaselUserMode.exe"
+  CreateShortCut "$SMPROGRAMS\Weasel User Mode\Weasel Settings.lnk" "$INSTDIR\WeaselDeployer.exe"
+  CreateShortCut "$SMPROGRAMS\Weasel User Mode\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 
   Exec '"$INSTDIR\WeaselUserMode.exe"'
 SectionEnd
@@ -85,8 +81,7 @@ Section "Uninstall"
   SetShellVarContext current
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
 
-  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" \
-    "WeaselUserMode"
+  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselUserMode"
   DeleteRegKey HKCU "${USERMODE_KEY}"
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
 
