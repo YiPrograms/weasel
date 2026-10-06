@@ -1,4 +1,6 @@
 #include <windows.h>
+#include <imm.h>
+#include <msctf.h>
 
 #include <array>
 #include <chrono>
@@ -14,11 +16,22 @@ namespace {
 
 HHOOK g_keyboard_hook = nullptr;
 weasel::Client g_client;
-bool g_enabled = true;
+ITfInputProcessorProfileMgr* g_profile_manager = nullptr;
+bool g_user_enabled = true;
+bool g_intercepting = false;
 HWND g_foreground_window = nullptr;
 std::array<bool, 256> g_swallowed_keys{};
-bool g_toggle_space_down = false;
-bool g_exit_hotkey_down = false;
+
+constexpr int kToggleHotkeyId = 1;
+constexpr int kExitHotkeyId = 2;
+constexpr UINT kDefaultToggleModifiers = MOD_CONTROL | MOD_ALT;
+constexpr UINT kDefaultToggleVirtualKey = VK_SPACE;
+constexpr wchar_t kUserModeRegistryKey[] = L"Software\\Rime\\Weasel\\UserMode";
+
+struct HotkeyConfig {
+  UINT modifiers = kDefaultToggleModifiers;
+  UINT virtual_key = kDefaultToggleVirtualKey;
+};
 
 std::wstring ModuleDirectory() {
   wchar_t path[MAX_PATH] = {};
@@ -44,6 +57,23 @@ bool LaunchServer() {
 bool DrainResponse(std::wstring* commit = nullptr) {
   weasel::ResponseParser parser(commit);
   return g_client.GetResponseData(std::ref(parser));
+}
+
+DWORD ReadUserModeDword(const wchar_t* name, DWORD fallback) {
+  DWORD value = fallback;
+  DWORD size = sizeof(value);
+  RegGetValueW(HKEY_CURRENT_USER, kUserModeRegistryKey, name, RRF_RT_REG_DWORD,
+               nullptr, &value, &size);
+  return value;
+}
+
+HotkeyConfig LoadToggleHotkey() {
+  HotkeyConfig config;
+  config.modifiers =
+      ReadUserModeDword(L"ToggleModifiers", kDefaultToggleModifiers);
+  config.virtual_key =
+      ReadUserModeDword(L"ToggleVirtualKey", kDefaultToggleVirtualKey);
+  return config;
 }
 
 bool ConnectServer() {
@@ -111,17 +141,77 @@ RECT GetInputPosition() {
   return result;
 }
 
-void UpdateForegroundSession() {
+bool IsTsfInputProcessorActive(HKL foreground_layout) {
+  if (!g_profile_manager || !foreground_layout)
+    return false;
+
+  TF_INPUTPROCESSORPROFILE profile = {};
+  const HRESULT hr =
+      g_profile_manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile);
+  if (hr != S_OK || profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR)
+    return false;
+
+  // GetActiveProfile is process-wide, while GetKeyboardLayout can inspect the
+  // foreground thread directly. Matching the language avoids suspending an
+  // unrelated foreground keyboard layout when Windows keeps per-app input
+  // methods.
+  const LANGID foreground_language =
+      LOWORD(reinterpret_cast<UINT_PTR>(foreground_layout));
+  return profile.langid == foreground_language;
+}
+
+bool ForegroundUsesPlainKeyboardLayout() {
+  const HWND foreground = GetForegroundWindow();
+  if (!foreground)
+    return false;
+
+  const DWORD thread_id = GetWindowThreadProcessId(foreground, nullptr);
+  if (!thread_id)
+    return false;
+
+  const HKL layout = GetKeyboardLayout(thread_id);
+  if (!layout)
+    return false;
+
+  // ImmIsIME catches legacy/IMM-backed IMEs. The TSF profile check catches
+  // modern text-service profiles that may not present as an IMM IME.
+  if (ImmIsIME(layout) || IsTsfInputProcessorActive(layout))
+    return false;
+
+  return true;
+}
+
+void StopInterception() {
+  if (!g_intercepting)
+    return;
+  g_client.ClearComposition();
+  DrainResponse();
+  g_client.FocusOut();
+  g_intercepting = false;
+  g_swallowed_keys.fill(false);
+}
+
+bool RefreshForegroundSession() {
   const HWND foreground = GetForegroundWindow();
   if (foreground != g_foreground_window) {
-    if (g_foreground_window)
-      g_client.FocusOut();
+    StopInterception();
     g_foreground_window = foreground;
-    if (g_foreground_window)
-      g_client.FocusIn();
+  }
+
+  const bool should_intercept = g_user_enabled && g_foreground_window &&
+                                ForegroundUsesPlainKeyboardLayout();
+  if (!should_intercept) {
+    StopInterception();
+    return false;
+  }
+
+  if (!g_intercepting) {
+    g_client.FocusIn();
+    g_intercepting = true;
   }
   if (g_foreground_window)
     g_client.UpdateInputPosition(GetInputPosition());
+  return true;
 }
 
 void SetKeyStateForEvent(std::array<BYTE, 256>& state, DWORD vk, bool key_up) {
@@ -160,6 +250,17 @@ bool IsPressed(int vk) {
   return (GetAsyncKeyState(vk) & 0x8000) != 0;
 }
 
+bool ShouldBypassSystemShortcut(const KBDLLHOOKSTRUCT& hook) {
+  if (hook.vkCode == VK_LWIN || hook.vkCode == VK_RWIN)
+    return true;
+
+  // Never steal Windows/app shortcuts. This intentionally means Rime's
+  // Ctrl/Alt shortcuts are unavailable in user-mode for now; coexistence with
+  // the host desktop takes priority.
+  return IsPressed(VK_LWIN) || IsPressed(VK_RWIN) || IsPressed(VK_CONTROL) ||
+         IsPressed(VK_MENU);
+}
+
 LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
   if (code < 0)
     return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
@@ -173,33 +274,6 @@ LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
   if (!key_down && !key_up)
     return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
 
-  // Prototype controls: Ctrl+Space toggles interception. Ctrl+Alt+F12 exits.
-  if (key_down && hook.vkCode == VK_SPACE && IsPressed(VK_CONTROL) &&
-      !g_toggle_space_down) {
-    g_enabled = !g_enabled;
-    if (!g_enabled) {
-      g_client.ClearComposition();
-      g_client.FocusOut();
-      g_foreground_window = nullptr;
-    }
-    g_toggle_space_down = true;
-    return 1;
-  }
-  if (key_down && hook.vkCode == VK_F12 && IsPressed(VK_CONTROL) &&
-      IsPressed(VK_MENU) && !g_exit_hotkey_down) {
-    PostQuitMessage(0);
-    g_exit_hotkey_down = true;
-    return 1;
-  }
-  if (key_up && hook.vkCode == VK_SPACE && g_toggle_space_down) {
-    g_toggle_space_down = false;
-    return 1;
-  }
-  if (key_up && hook.vkCode == VK_F12 && g_exit_hotkey_down) {
-    g_exit_hotkey_down = false;
-    return 1;
-  }
-
   bool swallow_release = false;
   if (key_up && hook.vkCode < g_swallowed_keys.size() &&
       g_swallowed_keys[hook.vkCode]) {
@@ -207,12 +281,16 @@ LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
     g_swallowed_keys[hook.vkCode] = false;
   }
 
-  if (!g_enabled || !ConnectServer())
-    return swallow_release
-               ? 1
-               : CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
+  // If we swallowed the matching key-down, its key-up must also stay hidden
+  // even if a modifier was pressed in between.
+  if (swallow_release)
+    return 1;
 
-  UpdateForegroundSession();
+  if (ShouldBypassSystemShortcut(hook))
+    return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
+
+  if (!ConnectServer() || !RefreshForegroundSession())
+    return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
 
   weasel::KeyEvent key_event;
   if (!ConvertLowLevelKey(hook, key_up, key_event))
@@ -227,47 +305,112 @@ LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
   if (key_down && handled && hook.vkCode < g_swallowed_keys.size())
     g_swallowed_keys[hook.vkCode] = true;
 
-  return (handled || swallow_release)
-             ? 1
-             : CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
+  return handled ? 1 : CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
 }
 
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+  const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  const bool com_initialized = SUCCEEDED(com_result);
+  if (com_initialized) {
+    CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr,
+                     CLSCTX_INPROC_SERVER, IID_ITfInputProcessorProfileMgr,
+                     reinterpret_cast<void**>(&g_profile_manager));
+  }
+
   if (!ConnectServer()) {
     MessageBoxW(
         nullptr,
         L"Could not connect to WeaselServer.exe. Keep WeaselUserMode.exe "
         L"next to the normal Weasel runtime files.",
         L"Weasel User Mode", MB_OK | MB_ICONERROR);
+    if (g_profile_manager)
+      g_profile_manager->Release();
+    if (com_initialized)
+      CoUninitialize();
     return 2;
   }
 
-  g_client.FocusIn();
+  g_user_enabled = ReadUserModeDword(L"StartEnabled", 1) != 0;
   g_foreground_window = GetForegroundWindow();
-  g_client.UpdateInputPosition(GetInputPosition());
+  RefreshForegroundSession();
+
+  const HotkeyConfig toggle = LoadToggleHotkey();
+  if (!RegisterHotKey(nullptr, kToggleHotkeyId, toggle.modifiers | MOD_NOREPEAT,
+                      toggle.virtual_key)) {
+    MessageBoxW(nullptr,
+                L"Could not register the Weasel User Mode toggle hotkey. "
+                L"Change ToggleModifiers/ToggleVirtualKey under "
+                L"HKCU\\Software\\Rime\\Weasel\\UserMode.",
+                L"Weasel User Mode", MB_OK | MB_ICONERROR);
+    StopInterception();
+    g_client.Disconnect();
+    if (g_profile_manager)
+      g_profile_manager->Release();
+    if (com_initialized)
+      CoUninitialize();
+    return 4;
+  }
+  RegisterHotKey(nullptr, kExitHotkeyId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+                 VK_F12);
+  const UINT_PTR input_mode_timer = SetTimer(nullptr, 1, 250, nullptr);
 
   g_keyboard_hook =
       SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHook, instance, 0);
   if (!g_keyboard_hook) {
     MessageBoxW(nullptr, L"Could not install the keyboard hook.",
                 L"Weasel User Mode", MB_OK | MB_ICONERROR);
-    g_client.FocusOut();
+    if (input_mode_timer)
+      KillTimer(nullptr, input_mode_timer);
+    UnregisterHotKey(nullptr, kExitHotkeyId);
+    UnregisterHotKey(nullptr, kToggleHotkeyId);
+    StopInterception();
     g_client.Disconnect();
+    if (g_profile_manager)
+      g_profile_manager->Release();
+    if (com_initialized)
+      CoUninitialize();
     return 3;
   }
 
   MSG message = {};
   while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+    if (message.message == WM_HOTKEY) {
+      if (message.wParam == kToggleHotkeyId) {
+        g_user_enabled = !g_user_enabled;
+        if (!g_user_enabled)
+          StopInterception();
+        else
+          RefreshForegroundSession();
+      } else if (message.wParam == kExitHotkeyId) {
+        PostQuitMessage(0);
+      }
+      continue;
+    }
+    if (message.message == WM_TIMER && message.wParam == input_mode_timer) {
+      if (ConnectServer())
+        RefreshForegroundSession();
+      continue;
+    }
     TranslateMessage(&message);
     DispatchMessageW(&message);
   }
 
   UnhookWindowsHookEx(g_keyboard_hook);
   g_keyboard_hook = nullptr;
-  g_client.FocusOut();
+  if (input_mode_timer)
+    KillTimer(nullptr, input_mode_timer);
+  UnregisterHotKey(nullptr, kExitHotkeyId);
+  UnregisterHotKey(nullptr, kToggleHotkeyId);
+  StopInterception();
   g_client.EndSession();
   g_client.Disconnect();
+  if (g_profile_manager) {
+    g_profile_manager->Release();
+    g_profile_manager = nullptr;
+  }
+  if (com_initialized)
+    CoUninitialize();
   return 0;
 }
