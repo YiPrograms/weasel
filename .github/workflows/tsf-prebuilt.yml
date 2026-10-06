@@ -26,8 +26,8 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           repository: YiPrograms/weasel
-          run-id: 37346844122
-          name: weasel-artifact-0.17.4.0.50ecac0
+          run-id: 37399914253
+          name: weasel-artifact-0.17.4.0.e800e8d
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: prebuilt
 
