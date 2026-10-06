@@ -251,8 +251,56 @@ jobs:
                 reinterpret_cast<void**>(&weasel_object));
             std::printf("Weasel COM CoCreateInstance HRESULT: 0x%08X\n",
                         static_cast<unsigned>(cocreate_weasel));
-            if (weasel_object)
+            if (weasel_object) {
+              ITfTextInputProcessorEx* processor = nullptr;
+              HRESULT query_processor = weasel_object->QueryInterface(
+                  IID_ITfTextInputProcessorEx,
+                  reinterpret_cast<void**>(&processor));
+              std::printf("Weasel QI ITfTextInputProcessorEx HRESULT: 0x%08X\n",
+                          static_cast<unsigned>(query_processor));
+              if (processor)
+                processor->Release();
               weasel_object->Release();
+            }
+
+            ITfTextInputProcessorEx* processor = nullptr;
+            HRESULT create_processor = CoCreateInstance(
+                kWeaselClsid, nullptr, CLSCTX_INPROC_SERVER,
+                IID_ITfTextInputProcessorEx,
+                reinterpret_cast<void**>(&processor));
+            std::printf("Weasel COM create ITfTextInputProcessorEx HRESULT: 0x%08X\n",
+                        static_cast<unsigned>(create_processor));
+            if (processor) {
+              ITfThreadMgr* thread_mgr = nullptr;
+              HRESULT create_thread_mgr = CoCreateInstance(
+                  CLSID_TF_ThreadMgr, nullptr, CLSCTX_INPROC_SERVER,
+                  IID_ITfThreadMgr, reinterpret_cast<void**>(&thread_mgr));
+              std::printf("ITfThreadMgr CoCreate HRESULT: 0x%08X\n",
+                          static_cast<unsigned>(create_thread_mgr));
+              if (thread_mgr) {
+                TfClientId client_id = TF_CLIENTID_NULL;
+                HRESULT activate_thread_mgr = thread_mgr->Activate(&client_id);
+                std::printf("ITfThreadMgr Activate HRESULT: 0x%08X client_id=%lu\n",
+                            static_cast<unsigned>(activate_thread_mgr),
+                            static_cast<unsigned long>(client_id));
+                if (SUCCEEDED(activate_thread_mgr)) {
+                  HRESULT activate_processor =
+                      processor->ActivateEx(thread_mgr, client_id, 0);
+                  std::printf("Weasel ITfTextInputProcessorEx ActivateEx HRESULT: 0x%08X\n",
+                              static_cast<unsigned>(activate_processor));
+                  if (SUCCEEDED(activate_processor)) {
+                    HRESULT deactivate_processor = processor->Deactivate();
+                    std::printf("Weasel ITfTextInputProcessor Deactivate HRESULT: 0x%08X\n",
+                                static_cast<unsigned>(deactivate_processor));
+                  }
+                  HRESULT deactivate_thread_mgr = thread_mgr->Deactivate();
+                  std::printf("ITfThreadMgr Deactivate HRESULT: 0x%08X\n",
+                              static_cast<unsigned>(deactivate_thread_mgr));
+                }
+                thread_mgr->Release();
+              }
+              processor->Release();
+            }
 
             std::puts("=== ProfileMgr after EnableLanguageProfile ===");
             dump_profiles(mgr);
