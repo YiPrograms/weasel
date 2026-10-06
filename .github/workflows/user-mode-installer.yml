@@ -1,0 +1,130 @@
+name: User-mode installer
+
+on:
+  push:
+    branches:
+      - user-mode-input
+    paths:
+      - 'WeaselUserMode/**'
+      - 'WeaselDeployer/**'
+      - 'WeaselServer/**'
+      - 'WeaselIPC/**'
+      - 'WeaselIPCServer/**'
+      - 'RimeWithWeasel/**'
+      - 'include/**'
+      - 'resource/**'
+      - 'xmake.lua'
+      - '.github/workflows/user-mode-installer.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    env:
+      boost_version: 1.84.0
+      BOOST_ROOT: ${{ github.workspace }}\deps\boost_1_84_0
+      SDKVER: 10.0.19041.0
+      VERSION_MAJOR: 0
+      VERSION_MINOR: 17
+      VERSION_PATCH: 4
+      FILE_VERSION: 0.17.4.0
+      PRODUCT_VERSION: 0.17.4.0.user-mode
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Configure build environment
+        shell: bash
+        run: cp env.vs2022.bat env.bat
+
+      - name: Cache Boost
+        id: cache-boost
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BOOST_ROOT }}
+          key: ${{ runner.os }}-boost-${{ env.boost_version }}
+
+      - name: Install Boost
+        if: steps.cache-boost.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          ./install_boost.bat
+          ./build.bat boost
+
+      - name: Configure MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          sdk: ${{ env.SDKVER }}
+          arch: x64
+
+      - name: Get prebuilt librime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\get-rime.ps1 -use dev
+
+      - name: Build shared data
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\build.bat data
+
+      - name: Build Weasel runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\build.bat
+
+      - name: Setup xmake
+        uses: xmake-io/github-action-setup-xmake@v1
+
+      - name: Build user-mode frontend
+        shell: cmd
+        run: |
+          xmake f -a x64 -m release --vs_sdkver=%SDKVER% -c
+          xmake WeaselUserMode
+
+      - name: Verify package inputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @(
+            'output\WeaselUserMode.exe',
+            'output\WeaselServer.exe',
+            'output\WeaselDeployer.exe',
+            'output\rime.dll',
+            'output\WinSparkle.dll',
+            'output\rime-install.bat',
+            'output\rime-install-config.bat',
+            'output\data\weasel.yaml'
+          ) | ForEach-Object {
+            if (-not (Test-Path $_)) {
+              throw "Missing package input: $_"
+            }
+          }
+          if (-not (Get-ChildItem 'output\data\opencc\*.json' -ErrorAction SilentlyContinue)) {
+            throw 'Missing OpenCC data'
+          }
+
+      - name: Build no-admin installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path output\archives | Out-Null
+          $shortSha = $env:GITHUB_SHA.Substring(0, 7)
+          $version = "0.17.4.0.$shortSha"
+          & "${env:ProgramFiles(x86)}\NSIS\Bin\makensis.exe" "/DPRODUCT_VERSION=$version" "WeaselUserMode\installer.nsi"
+          if ($LASTEXITCODE -ne 0) {
+            throw "makensis failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Upload user-mode installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-user-mode-installer-${{ github.sha }}
+          if-no-files-found: error
+          path: .\output\archives\weasel-user-mode-*-installer.exe
