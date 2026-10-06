@@ -560,11 +560,17 @@ static void probe_user_activation(ITfInputProcessorProfileMgr* mgr) {
                 query_layout_or_tip_user_reg ? "ok" : "failed");
     const WCHAR tip[] =
         L"0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}";
+    const WCHAR tip_with_prefix[] =
+        L"0x0404:{A3F4CDED-B1E9-41EE-9CA6-7B4D0DE6CB0A}{3D02CAB6-2B8E-4781-BA20-1C9267529467}";
     if (query_layout_or_tip_user_reg) {
       HRESULT valid = query_layout_or_tip_user_reg(
           nullptr, nullptr, nullptr, tip, 0);
-      std::printf("QueryLayoutOrTipStringUserReg(default roots) HRESULT: 0x%08X\n",
+      std::printf("QueryLayoutOrTipStringUserReg(default roots, 0404) HRESULT: 0x%08X\n",
                   static_cast<unsigned>(valid));
+      HRESULT valid_prefixed = query_layout_or_tip_user_reg(
+          nullptr, nullptr, nullptr, tip_with_prefix, 0);
+      std::printf("QueryLayoutOrTipStringUserReg(default roots, 0x0404) HRESULT: 0x%08X\n",
+                  static_cast<unsigned>(valid_prefixed));
 
       HANDLE token = nullptr;
       std::wstring sid_string;
@@ -607,8 +613,12 @@ static void probe_user_activation(ITfInputProcessorProfileMgr* mgr) {
           continue;
         HRESULT custom_valid = query_layout_or_tip_user_reg(
             nullptr, nullptr, software_roots[i], tip, 0);
-        std::printf("QueryLayoutOrTipStringUserReg(software=%s) HRESULT: 0x%08X\n",
+        HRESULT custom_valid_prefixed = query_layout_or_tip_user_reg(
+            nullptr, nullptr, software_roots[i], tip_with_prefix, 0);
+        std::printf("QueryLayoutOrTipStringUserReg(software=%s, 0404) HRESULT: 0x%08X\n",
                     software_labels[i], static_cast<unsigned>(custom_valid));
+        std::printf("QueryLayoutOrTipStringUserReg(software=%s, 0x0404) HRESULT: 0x%08X\n",
+                    software_labels[i], static_cast<unsigned>(custom_valid_prefixed));
       }
     }
     if (install_layout_or_tip_user_reg) {
