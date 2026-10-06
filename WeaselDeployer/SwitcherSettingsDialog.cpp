@@ -2,6 +2,7 @@
 #include "SwitcherSettingsDialog.h"
 #include "Configurator.h"
 #include <algorithm>
+#include <filesystem>
 #include <set>
 #include <rime_levers_api.h>
 #include <WeaselUtility.h>
@@ -113,6 +114,7 @@ LRESULT SwitcherSettingsDialog::OnClose(UINT, WPARAM, LPARAM, BOOL&) {
 LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD, WORD, HWND hWndCtl, BOOL&) {
   HKEY hKey;
   std::wstring hPath;
+  std::wstring weaselRoot;
   if (is_wow64())
     hPath = _T("Software\\WOW6432Node\\Rime\\Weasel");
   else
@@ -126,33 +128,51 @@ LRESULT SwitcherSettingsDialog::OnGetSchemata(WORD, WORD, HWND hWndCtl, BOOL&) {
     ret =
         RegQueryValueExW(hKey, L"WeaselRoot", NULL, &type, (LPBYTE)value, &len);
     if (ret == ERROR_SUCCESS && type == REG_SZ) {
-      WCHAR parameters[MAX_PATH + 37];
-      wcscpy_s<_countof(parameters)>(
-          parameters,
-          (std::wstring(L"/k \"") + value + L"\\rime-install.bat\"").c_str());
-      SHELLEXECUTEINFOW cmd = {sizeof(SHELLEXECUTEINFO),
-                               SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
-                               hWndCtl,
-                               L"open",
-                               L"cmd",
-                               parameters,
-                               NULL,
-                               SW_SHOW,
-                               NULL,
-                               NULL,
-                               NULL,
-                               NULL,
-                               NULL,
-                               NULL,
-                               NULL};
-      ShellExecuteExW(&cmd);
-      WaitForSingleObject(cmd.hProcess, INFINITE);
-      CloseHandle(cmd.hProcess);
-      api_->load_settings(reinterpret_cast<RimeCustomSettings*>(settings_));
-      Populate();
+      weaselRoot = value;
+    }
+    RegCloseKey(hKey);
+  }
+
+  // Portable/user-mode installs intentionally have no HKLM registration.
+  // Fall back to the directory containing WeaselDeployer.exe so schema
+  // installation remains available without administrator privileges.
+  if (weaselRoot.empty()) {
+    WCHAR modulePath[MAX_PATH] = {};
+    const DWORD length =
+        GetModuleFileNameW(NULL, modulePath, _countof(modulePath));
+    if (length > 0 && length < _countof(modulePath)) {
+      weaselRoot = std::filesystem::path(modulePath).parent_path().wstring();
     }
   }
-  RegCloseKey(hKey);
+
+  if (weaselRoot.empty())
+    return 0;
+
+  WCHAR parameters[MAX_PATH + 37];
+  wcscpy_s<_countof(parameters)>(
+      parameters,
+      (std::wstring(L"/k \"") + weaselRoot + L"\\rime-install.bat\"").c_str());
+  SHELLEXECUTEINFOW cmd = {sizeof(SHELLEXECUTEINFO),
+                           SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+                           hWndCtl,
+                           L"open",
+                           L"cmd",
+                           parameters,
+                           NULL,
+                           SW_SHOW,
+                           NULL,
+                           NULL,
+                           NULL,
+                           NULL,
+                           NULL,
+                           NULL,
+                           NULL};
+  if (ShellExecuteExW(&cmd) && cmd.hProcess) {
+    WaitForSingleObject(cmd.hProcess, INFINITE);
+    CloseHandle(cmd.hProcess);
+    api_->load_settings(reinterpret_cast<RimeCustomSettings*>(settings_));
+    Populate();
+  }
   return 0;
 }
 
