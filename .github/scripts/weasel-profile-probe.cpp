@@ -147,6 +147,76 @@ static void print_user_install_state() {
   RegCloseKey(key);
 }
 
+static void probe_hklm_override_registration(ITfInputProcessorProfileMgr* mgr) {
+  std::puts("=== Probe official TSF registration with HKLM overridden to HKCU ===");
+
+  HKEY current_user = nullptr;
+  LSTATUS open_status = RegOpenCurrentUser(KEY_READ | KEY_WRITE, &current_user);
+  std::printf("RegOpenCurrentUser status: %ld\n", static_cast<long>(open_status));
+  if (open_status != ERROR_SUCCESS)
+    return;
+
+  LSTATUS override_status =
+      RegOverridePredefKey(HKEY_LOCAL_MACHINE, current_user);
+  std::printf("RegOverridePredefKey(HKLM -> HKCU) status: %ld\n",
+              static_cast<long>(override_status));
+  if (override_status != ERROR_SUCCESS) {
+    RegCloseKey(current_user);
+    return;
+  }
+
+  ITfInputProcessorProfiles* profiles = nullptr;
+  HRESULT create_profiles = CoCreateInstance(
+      CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER,
+      IID_ITfInputProcessorProfiles, reinterpret_cast<void**>(&profiles));
+  std::printf("Override ITfInputProcessorProfiles CoCreate HRESULT: 0x%08X\n",
+              static_cast<unsigned>(create_profiles));
+  if (profiles) {
+    HRESULT register_service = profiles->Register(kWeaselClsid);
+    std::printf("Override Register text service HRESULT: 0x%08X\n",
+                static_cast<unsigned>(register_service));
+    profiles->Release();
+  }
+
+  WCHAR icon_file[MAX_PATH] = {};
+  ULONG icon_len =
+      GetModuleFileNameW(nullptr, icon_file, ARRAYSIZE(icon_file));
+  const WCHAR description[] = L"Weasel";
+  HRESULT register_profile = mgr->RegisterProfile(
+      kWeaselClsid, 0x0404, kWeaselProfile, description,
+      ARRAYSIZE(description) - 1, icon_file, icon_len, 0, nullptr, 0, TRUE, 0);
+  std::printf("Override RegisterProfile HRESULT: 0x%08X\n",
+              static_cast<unsigned>(register_profile));
+
+  ITfCategoryMgr* category_mgr = nullptr;
+  HRESULT create_category = CoCreateInstance(
+      CLSID_TF_CategoryMgr, nullptr, CLSCTX_INPROC_SERVER, IID_ITfCategoryMgr,
+      reinterpret_cast<void**>(&category_mgr));
+  std::printf("Override ITfCategoryMgr CoCreate HRESULT: 0x%08X\n",
+              static_cast<unsigned>(create_category));
+  if (category_mgr) {
+    HRESULT category_tip = category_mgr->RegisterCategory(
+        kWeaselClsid, GUID_TFCAT_CATEGORY_OF_TIP, kWeaselClsid);
+    HRESULT category_keyboard = category_mgr->RegisterCategory(
+        kWeaselClsid, GUID_TFCAT_TIP_KEYBOARD, kWeaselClsid);
+    std::printf("Override RegisterCategory(CATEGORY_OF_TIP) HRESULT: 0x%08X\n",
+                static_cast<unsigned>(category_tip));
+    std::printf("Override RegisterCategory(TIP_KEYBOARD) HRESULT: 0x%08X\n",
+                static_cast<unsigned>(category_keyboard));
+    category_mgr->Release();
+  }
+
+  LSTATUS restore_status = RegOverridePredefKey(HKEY_LOCAL_MACHINE, nullptr);
+  std::printf("Restore HKLM override status: %ld\n",
+              static_cast<long>(restore_status));
+  RegCloseKey(current_user);
+
+  std::puts("=== Registration keys after official APIs under override ===");
+  print_registration_keys();
+  std::puts("=== ProfileMgr after official APIs under override ===");
+  dump_profiles(mgr);
+}
+
 static void probe_user_activation(ITfInputProcessorProfileMgr* mgr) {
   ITfInputProcessorProfiles* profiles = nullptr;
   HRESULT create_profiles = CoCreateInstance(
@@ -534,8 +604,10 @@ int wmain(int argc, wchar_t** argv) {
     std::puts("=== ProfileMgr in current user ===");
   }
 
-  if (activate_mode)
+  if (activate_mode) {
+    probe_hklm_override_registration(mgr);
     probe_user_activation(mgr);
+  }
 
   if (register_mode) {
     print_identity();
