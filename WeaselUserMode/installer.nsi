@@ -55,9 +55,9 @@ Section "Weasel User Mode" SecMain
 
   WriteRegStr HKCU "${USERMODE_KEY}" "InstallDir" "$INSTDIR"
   WriteRegDWORD HKCU "${USERMODE_KEY}" "StartEnabled" 1
-  ; MOD_ALT | MOD_CONTROL, VK_SPACE. These can be changed later without admin.
+  ; MOD_ALT | MOD_CONTROL, VK_F11. These can be changed later without admin.
   WriteRegDWORD HKCU "${USERMODE_KEY}" "ToggleModifiers" 3
-  WriteRegDWORD HKCU "${USERMODE_KEY}" "ToggleVirtualKey" 0x20
+  WriteRegDWORD HKCU "${USERMODE_KEY}" "ToggleVirtualKey" 0x7A
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselUserMode" '"$INSTDIR\WeaselUserMode.exe"'
 
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "Weasel User Mode"
