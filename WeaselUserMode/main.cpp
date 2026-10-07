@@ -25,7 +25,7 @@ std::array<bool, 256> g_swallowed_keys{};
 constexpr int kToggleHotkeyId = 1;
 constexpr int kExitHotkeyId = 2;
 constexpr UINT kDefaultToggleModifiers = MOD_CONTROL | MOD_ALT;
-constexpr UINT kDefaultToggleVirtualKey = VK_SPACE;
+constexpr UINT kDefaultToggleVirtualKey = VK_F11;
 constexpr wchar_t kUserModeRegistryKey[] = L"Software\\Rime\\Weasel\\UserMode";
 
 struct HotkeyConfig {
@@ -74,6 +74,78 @@ HotkeyConfig LoadToggleHotkey() {
   config.virtual_key =
       ReadUserModeDword(L"ToggleVirtualKey", kDefaultToggleVirtualKey);
   return config;
+}
+
+void SaveToggleHotkey(const HotkeyConfig& config) {
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, kUserModeRegistryKey, 0, nullptr, 0,
+                      KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS)
+    return;
+
+  const DWORD modifiers = config.modifiers;
+  const DWORD virtual_key = config.virtual_key;
+  RegSetValueExW(key, L"ToggleModifiers", 0, REG_DWORD,
+                 reinterpret_cast<const BYTE*>(&modifiers), sizeof(modifiers));
+  RegSetValueExW(key, L"ToggleVirtualKey", 0, REG_DWORD,
+                 reinterpret_cast<const BYTE*>(&virtual_key),
+                 sizeof(virtual_key));
+  RegCloseKey(key);
+}
+
+bool RegisterToggleHotkey() {
+  const HotkeyConfig requested = LoadToggleHotkey();
+
+  struct Candidate {
+    HotkeyConfig config;
+    const wchar_t* name;
+  };
+
+  const std::array<Candidate, 4> candidates = {{
+      {requested, L"the configured hotkey"},
+      {{MOD_CONTROL | MOD_ALT, VK_F11}, L"Ctrl+Alt+F11"},
+      {{MOD_CONTROL | MOD_SHIFT, VK_F11}, L"Ctrl+Shift+F11"},
+      {{MOD_CONTROL | MOD_ALT, VK_F10}, L"Ctrl+Alt+F10"},
+  }};
+
+  for (size_t index = 0; index < candidates.size(); ++index) {
+    const auto& candidate = candidates[index];
+    bool duplicate = false;
+    for (size_t previous = 0; previous < index; ++previous) {
+      if (candidates[previous].config.modifiers == candidate.config.modifiers &&
+          candidates[previous].config.virtual_key ==
+              candidate.config.virtual_key) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate)
+      continue;
+
+    if (!RegisterHotKey(nullptr, kToggleHotkeyId,
+                        candidate.config.modifiers | MOD_NOREPEAT,
+                        candidate.config.virtual_key)) {
+      continue;
+    }
+
+    if (index != 0) {
+      SaveToggleHotkey(candidate.config);
+      std::wstring message =
+          L"The configured Weasel User Mode toggle hotkey is already in use. "
+          L"Using ";
+      message += candidate.name;
+      message += L" instead. This fallback has been saved for this user.";
+      MessageBoxW(nullptr, message.c_str(), L"Weasel User Mode",
+                  MB_OK | MB_ICONINFORMATION);
+    }
+    return true;
+  }
+
+  MessageBoxW(
+      nullptr,
+      L"Could not reserve a global toggle hotkey. Weasel User Mode will still "
+      L"run enabled. You can exit it with Ctrl+Alt+F12 or Task Manager.",
+      L"Weasel User Mode", MB_OK | MB_ICONWARNING);
+  return false;
 }
 
 bool ConnectServer() {
@@ -336,22 +408,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   g_foreground_window = GetForegroundWindow();
   RefreshForegroundSession();
 
-  const HotkeyConfig toggle = LoadToggleHotkey();
-  if (!RegisterHotKey(nullptr, kToggleHotkeyId, toggle.modifiers | MOD_NOREPEAT,
-                      toggle.virtual_key)) {
-    MessageBoxW(nullptr,
-                L"Could not register the Weasel User Mode toggle hotkey. "
-                L"Change ToggleModifiers/ToggleVirtualKey under "
-                L"HKCU\\Software\\Rime\\Weasel\\UserMode.",
-                L"Weasel User Mode", MB_OK | MB_ICONERROR);
-    StopInterception();
-    g_client.Disconnect();
-    if (g_profile_manager)
-      g_profile_manager->Release();
-    if (com_initialized)
-      CoUninitialize();
-    return 4;
-  }
+  const bool toggle_hotkey_registered = RegisterToggleHotkey();
   RegisterHotKey(nullptr, kExitHotkeyId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
                  VK_F12);
   const UINT_PTR input_mode_timer = SetTimer(nullptr, 1, 250, nullptr);
@@ -364,7 +421,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (input_mode_timer)
       KillTimer(nullptr, input_mode_timer);
     UnregisterHotKey(nullptr, kExitHotkeyId);
-    UnregisterHotKey(nullptr, kToggleHotkeyId);
+    if (toggle_hotkey_registered)
+      UnregisterHotKey(nullptr, kToggleHotkeyId);
     StopInterception();
     g_client.Disconnect();
     if (g_profile_manager)
@@ -402,7 +460,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   if (input_mode_timer)
     KillTimer(nullptr, input_mode_timer);
   UnregisterHotKey(nullptr, kExitHotkeyId);
-  UnregisterHotKey(nullptr, kToggleHotkeyId);
+  if (toggle_hotkey_registered)
+    UnregisterHotKey(nullptr, kToggleHotkeyId);
   StopInterception();
   g_client.EndSession();
   g_client.Disconnect();
