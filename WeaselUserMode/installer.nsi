@@ -16,12 +16,24 @@ ShowUninstDetails show
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WeaselUserMode"
 !define USERMODE_KEY "Software\Rime\Weasel\UserMode"
 
+Function StopUserModeProcesses
+  ; Stop the frontend first so it cannot reconnect and relaunch the server.
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
+
+  ; Ask the user-mode server to exit cleanly before replacing runtime files.
+  IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
+    nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
+
+  ; Fallback for a hung server/deployer. These are current-user processes in
+  ; the no-admin installation, so no elevation is required.
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselServer.exe /F'
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselDeployer.exe /F'
+  Sleep 500
+FunctionEnd
+
 Section "Weasel User Mode" SecMain
   SetShellVarContext current
-
-  ; Stop a previous user-mode frontend before replacing its files. This does
-  ; not require elevation because the process belongs to the current user.
-  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
+  Call StopUserModeProcesses
 
   SetOutPath "$INSTDIR"
   File "..\output\WeaselUserMode.exe"
@@ -79,7 +91,7 @@ SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
-  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
+  Call StopUserModeProcesses
 
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselUserMode"
   DeleteRegKey HKCU "${USERMODE_KEY}"
