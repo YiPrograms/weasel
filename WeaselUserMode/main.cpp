@@ -213,25 +213,6 @@ RECT GetInputPosition() {
   return result;
 }
 
-bool IsTsfInputProcessorActive(HKL foreground_layout) {
-  if (!g_profile_manager || !foreground_layout)
-    return false;
-
-  TF_INPUTPROCESSORPROFILE profile = {};
-  const HRESULT hr =
-      g_profile_manager->GetActiveProfile(GUID_TFCAT_TIP_KEYBOARD, &profile);
-  if (hr != S_OK || profile.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR)
-    return false;
-
-  // GetActiveProfile is process-wide, while GetKeyboardLayout can inspect the
-  // foreground thread directly. Matching the language avoids suspending an
-  // unrelated foreground keyboard layout when Windows keeps per-app input
-  // methods.
-  const LANGID foreground_language =
-      LOWORD(reinterpret_cast<UINT_PTR>(foreground_layout));
-  return profile.langid == foreground_language;
-}
-
 bool ForegroundUsesPlainKeyboardLayout() {
   const HWND foreground = GetForegroundWindow();
   if (!foreground)
@@ -245,9 +226,10 @@ bool ForegroundUsesPlainKeyboardLayout() {
   if (!layout)
     return false;
 
-  // ImmIsIME catches legacy/IMM-backed IMEs. The TSF profile check catches
-  // modern text-service profiles that may not present as an IMM IME.
-  if (ImmIsIME(layout) || IsTsfInputProcessorActive(layout))
+  // Decide from the foreground thread's actual HKL. A process-wide TSF
+  // GetActiveProfile() query can describe a different app when Windows keeps
+  // per-app input methods, which caused false suspension of User Mode.
+  if (ImmIsIME(layout))
     return false;
 
   return true;
@@ -261,6 +243,41 @@ void StopInterception() {
   g_client.FocusOut();
   g_intercepting = false;
   g_swallowed_keys.fill(false);
+}
+
+enum class UserModeState {
+  kOff,
+  kArmed,
+  kActive,
+};
+
+UserModeState CurrentUserModeState() {
+  if (!g_user_enabled)
+    return UserModeState::kOff;
+  return g_intercepting ? UserModeState::kActive : UserModeState::kArmed;
+}
+
+void ShowUserModeState() {
+  const UserModeState state = CurrentUserModeState();
+  const wchar_t* message = nullptr;
+  switch (state) {
+    case UserModeState::kOff:
+      message = L"Weasel User Mode: OFF";
+      break;
+    case UserModeState::kActive:
+      message =
+          L"Weasel User Mode: ACTIVE\n\nKeyboard input is being handled by "
+          L"Rime.";
+      break;
+    case UserModeState::kArmed:
+      message =
+          L"Weasel User Mode: ARMED\n\nIt is enabled, but the current "
+          L"foreground app is using another Windows IME/layout. Switch to a "
+          L"plain keyboard layout such as English (US).";
+      break;
+  }
+  MessageBoxW(nullptr, message, L"Weasel User Mode",
+              MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
 }
 
 bool RefreshForegroundSession() {
@@ -441,6 +458,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
           StopInterception();
         else
           RefreshForegroundSession();
+        ShowUserModeState();
       } else if (message.wParam == kExitHotkeyId) {
         PostQuitMessage(0);
       }
