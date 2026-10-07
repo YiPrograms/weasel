@@ -31,6 +31,17 @@ Function StopUserModeProcesses
   Sleep 500
 FunctionEnd
 
+Function un.StopUserModeProcesses
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
+
+  IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
+    nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
+
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselServer.exe /F'
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselDeployer.exe /F'
+  Sleep 500
+FunctionEnd
+
 Section "Weasel User Mode" SecMain
   SetShellVarContext current
   Call StopUserModeProcesses
@@ -91,7 +102,7 @@ SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
-  Call StopUserModeProcesses
+  Call un.StopUserModeProcesses
 
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselUserMode"
   DeleteRegKey HKCU "${USERMODE_KEY}"
