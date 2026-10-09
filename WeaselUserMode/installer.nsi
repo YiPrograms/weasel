@@ -29,7 +29,7 @@ Function StopUserModeProcesses
   ; Fallback for a hung server/deployer. These are current-user processes in
   ; the no-admin installation, so no elevation is required.
   ; Kill only processes whose executable is in our own install directory.
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process -Name WeaselServer,WeaselDeployer -ErrorAction SilentlyContinue | Where-Object {$_.Path -and [IO.Path]::GetDirectoryName($_.Path) -eq [Environment]::GetEnvironmentVariable('WEASEL_USER_MODE_PATH')} | Stop-Process -Force"'
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process -Name WeaselServer,WeaselDeployer -ErrorAction SilentlyContinue | Where-Object {$_.Path -and [IO.Path]::GetDirectoryName($_.Path) -eq $env:WEASEL_USER_MODE_PATH} | Stop-Process -Force"'
   Sleep 500
 FunctionEnd
 
@@ -42,7 +42,7 @@ Function un.StopUserModeProcesses
     nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
 
   ; Kill only processes whose executable is in our own install directory.
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process -Name WeaselServer,WeaselDeployer -ErrorAction SilentlyContinue | Where-Object {$_.Path -and [IO.Path]::GetDirectoryName($_.Path) -eq [Environment]::GetEnvironmentVariable('WEASEL_USER_MODE_PATH')} | Stop-Process -Force"'
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process -Name WeaselServer,WeaselDeployer -ErrorAction SilentlyContinue | Where-Object {$_.Path -and [IO.Path]::GetDirectoryName($_.Path) -eq $env:WEASEL_USER_MODE_PATH} | Stop-Process -Force"'
   Sleep 500
 FunctionEnd
 
