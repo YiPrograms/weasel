@@ -180,7 +180,15 @@ inline std::wstring GetPipeName() {
   pipe_name += L"\\\\.\\pipe\\";
   pipe_name += getUsername();
   pipe_name += L"\\";
-  pipe_name += WEASEL_IPC_PIPE_NAME;
+  // Keep portable User Mode isolated from an existing native Weasel install.
+  // Set this flag before starting the portable server or creating its client.
+  wchar_t user_mode[4] = {};
+  if (GetEnvironmentVariableW(L"WEASEL_USER_MODE", user_mode,
+                              _countof(user_mode)) == 1 &&
+      user_mode[0] == L'1')
+    pipe_name += L"WeaselUserModeNamedPipe";
+  else
+    pipe_name += WEASEL_IPC_PIPE_NAME;
   return pipe_name;
 }
 }  // namespace weasel
