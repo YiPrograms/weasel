@@ -60,8 +60,7 @@ bool LaunchServer() {
   startup.cb = sizeof(startup);
   PROCESS_INFORMATION process = {};
   if (!CreateProcessW(server.c_str(), command_line.data(), nullptr, nullptr,
-                      FALSE, 0, nullptr, directory.c_str(), &startup,
-                      &process))
+                      FALSE, 0, nullptr, directory.c_str(), &startup, &process))
     return false;
 
   CloseHandle(process.hThread);
