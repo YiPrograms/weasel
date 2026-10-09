@@ -68,6 +68,31 @@ bool LaunchServer() {
   return true;
 }
 
+bool LaunchDeployer(const wchar_t* arguments) {
+  const std::wstring directory = ModuleDirectory();
+  const std::wstring executable = directory + L"\\WeaselDeployer.exe";
+  if (GetFileAttributesW(executable.c_str()) == INVALID_FILE_ATTRIBUTES)
+    return false;
+
+  std::wstring command_line = L"\"" + executable + L"\"";
+  if (arguments && *arguments) {
+    command_line += L" ";
+    command_line += arguments;
+  }
+
+  STARTUPINFOW startup = {};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process = {};
+  if (!CreateProcessW(executable.c_str(), command_line.data(), nullptr,
+                      nullptr, FALSE, 0, nullptr, directory.c_str(), &startup,
+                      &process))
+    return false;
+
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  return true;
+}
+
 bool DrainResponse(std::wstring* commit = nullptr) {
   weasel::ResponseParser parser(commit);
   return UserModeClient().GetResponseData(std::ref(parser));
@@ -478,6 +503,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
   }
   if (command_line && wcscmp(command_line, L"--ipc-smoke") == 0)
     return RunIpcSmokeTest();
+  if (command_line && wcscmp(command_line, L"--settings") == 0)
+    return LaunchDeployer(L"") ? 0 : 6;
+  if (command_line && wcscmp(command_line, L"--deploy") == 0)
+    return LaunchDeployer(L"/deploy") ? 0 : 6;
   const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   const bool com_initialized = SUCCEEDED(com_result);
   if (com_initialized) {
