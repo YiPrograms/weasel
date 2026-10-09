@@ -395,8 +395,19 @@ bool IsPressed(int vk) {
 }
 
 bool ShouldBypassSystemShortcut(const KBDLLHOOKSTRUCT& hook) {
-  if (hook.vkCode == VK_LWIN || hook.vkCode == VK_RWIN)
-    return true;
+  // The low-level hook runs before the async key state is updated. Explicitly
+  // bypass the modifier event itself, not only subsequent shortcut keys.
+  switch (hook.vkCode) {
+    case VK_LWIN:
+    case VK_RWIN:
+    case VK_CONTROL:
+    case VK_LCONTROL:
+    case VK_RCONTROL:
+    case VK_MENU:
+    case VK_LMENU:
+    case VK_RMENU:
+      return true;
+  }
 
   // Never steal Windows/app shortcuts. This intentionally means Rime's
   // Ctrl/Alt shortcuts are unavailable in user-mode for now; coexistence with
@@ -433,7 +444,12 @@ LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
   if (ShouldBypassSystemShortcut(hook))
     return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
 
-  if (!ConnectServer() || !RefreshForegroundSession())
+  // Never reconnect, launch a process or reposition the UI from the hook.
+  // Those operations perform blocking IPC and can make Windows silently
+  // remove a low-level hook after its one-second timeout.
+  if (!g_intercepting || !g_user_enabled ||
+      GetForegroundWindow() != g_foreground_window ||
+      !ForegroundUsesPlainKeyboardLayout())
     return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
 
   weasel::KeyEvent key_event;
