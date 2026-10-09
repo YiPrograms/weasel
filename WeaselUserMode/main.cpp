@@ -55,7 +55,7 @@ bool LaunchServer() {
 
   // ShellExecute may delegate to Explorer, losing the custom environment.
   // CreateProcess inherits WEASEL_USER_MODE=1 into the portable server.
-  std::wstring command_line = L"\\\"" + server + L"\\\"";
+  std::wstring command_line = L"\"" + server + L"\"";
   STARTUPINFOW startup = {};
   startup.cb = sizeof(startup);
   PROCESS_INFORMATION process = {};
