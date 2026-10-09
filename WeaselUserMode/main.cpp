@@ -191,6 +191,47 @@ bool ConnectServer() {
   return false;
 }
 
+// Verifies the *real* packaged WeaselServer/Rime IPC path without a TSF IME.
+// This is not a desktop keyboard-hook/Notepad end-to-end test.
+int RunIpcSmokeTest() {
+  if (!ConnectServer())
+    return 10;
+
+  std::wstring committed;
+  bool any_key_handled = false;
+  for (const wchar_t ch : std::wstring(L"nihao")) {
+    const weasel::KeyEvent key(static_cast<UINT>(ch), 0);
+    any_key_handled |= UserModeClient().ProcessKeyEvent(key);
+    std::wstring segment;
+    DrainResponse(&segment);
+    committed += segment;
+  }
+
+  const weasel::KeyEvent space(ibus::space, 0);
+  any_key_handled |= UserModeClient().ProcessKeyEvent(space);
+  std::wstring segment;
+  DrainResponse(&segment);
+  committed += segment;
+
+  UserModeClient().EndSession();
+  UserModeClient().ShutdownServer();
+  UserModeClient().Disconnect();
+
+  bool contains_chinese = false;
+  for (const wchar_t ch : committed) {
+    if (ch >= 0x3400 && ch <= 0x9fff) {
+      contains_chinese = true;
+      break;
+    }
+  }
+
+  if (!any_key_handled)
+    return 11;
+  if (!contains_chinese)
+    return 12;
+  return 0;
+}
+
 void SendUnicode(const std::wstring& text) {
   for (const wchar_t ch : text) {
     INPUT inputs[2] = {};
@@ -413,12 +454,14 @@ LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
 
 }  // namespace
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
   if (!SetEnvironmentVariableW(L"WEASEL_USER_MODE", L"1")) {
     MessageBoxW(nullptr, L"Failed to select the portable IPC namespace.",
                 L"Weasel User Mode", MB_OK | MB_ICONERROR);
     return 5;
   }
+  if (command_line && wcscmp(command_line, L"--ipc-smoke") == 0)
+    return RunIpcSmokeTest();
   const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   const bool com_initialized = SUCCEEDED(com_result);
   if (com_initialized) {
