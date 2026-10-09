@@ -4,7 +4,8 @@
 bool ConvertKeyEvent(UINT vkey,
                      KeyInfo kinfo,
                      const LPBYTE keyState,
-                     weasel::KeyEvent& result) {
+                     weasel::KeyEvent& result,
+                     HKL keyboard_layout) {
   const BYTE KEY_DOWN = 0x80;
   const BYTE TOGGLED = 0x01;
   ibus::Keycode TranslateKeycode(UINT vkey, KeyInfo kinfo);
@@ -48,7 +49,8 @@ bool ConvertKeyEvent(UINT vkey,
   memcpy(table, keyState, sizeof(table));
   table[VK_CONTROL] = 0;
   table[VK_MENU] = 0;
-  int ret = ToUnicodeEx(vkey, UINT(kinfo), table, buf, buf_len, 0, NULL);
+  int ret = ToUnicodeEx(vkey, UINT(kinfo), table, buf, buf_len, 0,
+                        keyboard_layout);
   if (ret == 1) {
     result.keycode = UINT(buf[0]);
     return true;
