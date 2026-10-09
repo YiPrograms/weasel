@@ -106,7 +106,7 @@ Section "Weasel User Mode" SecMain
 
   CreateDirectory "$SMPROGRAMS\Weasel User Mode"
   CreateShortCut "$SMPROGRAMS\Weasel User Mode\Weasel User Mode.lnk" "$INSTDIR\WeaselUserMode.exe"
-  CreateShortCut "$SMPROGRAMS\Weasel User Mode\Weasel Settings.lnk" "$INSTDIR\WeaselDeployer.exe"
+  CreateShortCut "$SMPROGRAMS\Weasel User Mode\Weasel Settings.lnk" "$INSTDIR\WeaselUserMode.exe" "--settings"
   CreateShortCut "$SMPROGRAMS\Weasel User Mode\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 
   Exec '"$INSTDIR\WeaselUserMode.exe"'
