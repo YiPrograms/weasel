@@ -412,7 +412,13 @@ bool ConvertLowLevelKey(const KBDLLHOOKSTRUCT& hook,
   GetKeyboardState(state.data());
   SetKeyStateForEvent(state, hook.vkCode, key_up);
   KeyInfo info(static_cast<LPARAM>(lparam));
-  return ConvertKeyEvent(hook.vkCode, info, state.data(), result);
+  const HWND foreground = GetForegroundWindow();
+  const DWORD foreground_thread =
+      foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
+  const HKL foreground_layout =
+      foreground_thread ? GetKeyboardLayout(foreground_thread) : nullptr;
+  return ConvertKeyEvent(hook.vkCode, info, state.data(), result,
+                         foreground_layout);
 }
 
 bool IsPressed(int vk) {
