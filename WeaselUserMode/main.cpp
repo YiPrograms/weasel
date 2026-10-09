@@ -15,7 +15,11 @@
 namespace {
 
 HHOOK g_keyboard_hook = nullptr;
-weasel::Client g_client;
+// Construct lazily so the user-mode IPC namespace is set before GetPipeName().
+weasel::Client& UserModeClient() {
+  static weasel::Client client;
+  return client;
+}
 ITfInputProcessorProfileMgr* g_profile_manager = nullptr;
 bool g_user_enabled = true;
 bool g_intercepting = false;
@@ -49,14 +53,25 @@ bool LaunchServer() {
   if (GetFileAttributesW(server.c_str()) == INVALID_FILE_ATTRIBUTES)
     return false;
 
-  const HINSTANCE result = ShellExecuteW(nullptr, L"open", server.c_str(),
-                                         nullptr, directory.c_str(), SW_HIDE);
-  return reinterpret_cast<INT_PTR>(result) > 32;
+  // ShellExecute may delegate to Explorer, losing the custom environment.
+  // CreateProcess inherits WEASEL_USER_MODE=1 into the portable server.
+  std::wstring command_line = L"\\\"" + server + L"\\\"";
+  STARTUPINFOW startup = {};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process = {};
+  if (!CreateProcessW(server.c_str(), command_line.data(), nullptr, nullptr,
+                      FALSE, 0, nullptr, directory.c_str(), &startup,
+                      &process))
+    return false;
+
+  CloseHandle(process.hThread);
+  CloseHandle(process.hProcess);
+  return true;
 }
 
 bool DrainResponse(std::wstring* commit = nullptr) {
   weasel::ResponseParser parser(commit);
-  return g_client.GetResponseData(std::ref(parser));
+  return UserModeClient().GetResponseData(std::ref(parser));
 }
 
 DWORD ReadUserModeDword(const wchar_t* name, DWORD fallback) {
@@ -149,16 +164,16 @@ bool RegisterToggleHotkey() {
 }
 
 bool ConnectServer() {
-  if (g_client.Echo())
+  if (UserModeClient().Echo())
     return true;
 
-  g_client.Disconnect();
-  if (g_client.Connect()) {
-    g_client.StartSession();
+  UserModeClient().Disconnect();
+  if (UserModeClient().Connect()) {
+    UserModeClient().StartSession();
     DrainResponse();
-    if (g_client.Echo())
+    if (UserModeClient().Echo())
       return true;
-    g_client.Disconnect();
+    UserModeClient().Disconnect();
   }
 
   if (!LaunchServer())
@@ -166,13 +181,13 @@ bool ConnectServer() {
 
   for (int attempt = 0; attempt < 30; ++attempt) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    if (!g_client.Connect())
+    if (!UserModeClient().Connect())
       continue;
-    g_client.StartSession();
+    UserModeClient().StartSession();
     DrainResponse();
-    if (g_client.Echo())
+    if (UserModeClient().Echo())
       return true;
-    g_client.Disconnect();
+    UserModeClient().Disconnect();
   }
   return false;
 }
@@ -238,9 +253,9 @@ bool ForegroundUsesPlainKeyboardLayout() {
 void StopInterception() {
   if (!g_intercepting)
     return;
-  g_client.ClearComposition();
+  UserModeClient().ClearComposition();
   DrainResponse();
-  g_client.FocusOut();
+  UserModeClient().FocusOut();
   g_intercepting = false;
   g_swallowed_keys.fill(false);
 }
@@ -295,11 +310,11 @@ bool RefreshForegroundSession() {
   }
 
   if (!g_intercepting) {
-    g_client.FocusIn();
+    UserModeClient().FocusIn();
     g_intercepting = true;
   }
   if (g_foreground_window)
-    g_client.UpdateInputPosition(GetInputPosition());
+    UserModeClient().UpdateInputPosition(GetInputPosition());
   return true;
 }
 
@@ -385,7 +400,7 @@ LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
   if (!ConvertLowLevelKey(hook, key_up, key_event))
     return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
 
-  const bool handled = g_client.ProcessKeyEvent(key_event);
+  const bool handled = UserModeClient().ProcessKeyEvent(key_event);
   std::wstring commit;
   DrainResponse(&commit);
   if (!commit.empty())
@@ -400,6 +415,11 @@ LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+  if (!SetEnvironmentVariableW(L"WEASEL_USER_MODE", L"1")) {
+    MessageBoxW(nullptr, L"Failed to select the portable IPC namespace.",
+                L"Weasel User Mode", MB_OK | MB_ICONERROR);
+    return 5;
+  }
   const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   const bool com_initialized = SUCCEEDED(com_result);
   if (com_initialized) {
@@ -441,7 +461,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     if (toggle_hotkey_registered)
       UnregisterHotKey(nullptr, kToggleHotkeyId);
     StopInterception();
-    g_client.Disconnect();
+    UserModeClient().Disconnect();
     if (g_profile_manager)
       g_profile_manager->Release();
     if (com_initialized)
@@ -481,8 +501,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
   if (toggle_hotkey_registered)
     UnregisterHotKey(nullptr, kToggleHotkeyId);
   StopInterception();
-  g_client.EndSession();
-  g_client.Disconnect();
+  UserModeClient().EndSession();
+  UserModeClient().Disconnect();
   if (g_profile_manager) {
     g_profile_manager->Release();
     g_profile_manager = nullptr;
