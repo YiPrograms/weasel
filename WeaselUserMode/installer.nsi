@@ -17,6 +17,114 @@ ShowUninstDetails show
 !define USERMODE_KEY "Software\Rime\Weasel\UserMode"
 
 Function StopUserModeProcesses
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r0'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE_PATH", w "$INSTDIR") i.r0'
+  ; Stop the frontend first so it cannot reconnect and relaunch the server.
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
+
+  ; Ask the user-mode server to exit cleanly before replacing runtime files.
+  IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
+    nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
+
+  ; Fallback for a hung server/deployer. These are current-user processes in
+  ; the no-admin installation, so no elevation is required.
+  ; Only kill server/deployer processes running from our install directory.
+  ; Do not terminate an unrelated native WeaselServer.exe.
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process -Name WeaselServer,WeaselDeployer -ErrorAction SilentlyContinue | Where-Object {$_.Path -and [IO.Path]::GetDirectoryName($_.Path) -eq [Environment]::GetEnvironmentVariable(Unicode true
+
+!ifndef PRODUCT_VERSION
+  !define PRODUCT_VERSION "dev"
+!endif
+
+Name "Weasel User Mode"
+OutFile "..\output\archives\weasel-user-mode-${PRODUCT_VERSION}-installer.exe"
+InstallDir "$LOCALAPPDATA\Rime\WeaselUserMode"
+InstallDirRegKey HKCU "Software\Rime\Weasel\UserMode" "InstallDir"
+RequestExecutionLevel user
+SetCompressor /SOLID lzma
+ShowInstDetails show
+ShowUninstDetails show
+
+!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WeaselUserMode"
+!define USERMODE_KEY "Software\Rime\Weasel\UserMode"
+
+Function StopUserModeProcesses
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r0'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE_PATH", w "$INSTDIR") i.r0'
+  ; Stop the frontend first so it cannot reconnect and relaunch the server.
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
+
+  ; Ask the user-mode server to exit cleanly before replacing runtime files.
+  IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
+    nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
+
+  ; Fallback for a hung server/deployer. These are current-user processes in
+  ; the no-admin installation, so no elevation is required.
+'WEASEL_USER_MODE_PATHUnicode true
+
+!ifndef PRODUCT_VERSION
+  !define PRODUCT_VERSION "dev"
+!endif
+
+Name "Weasel User Mode"
+OutFile "..\output\archives\weasel-user-mode-${PRODUCT_VERSION}-installer.exe"
+InstallDir "$LOCALAPPDATA\Rime\WeaselUserMode"
+InstallDirRegKey HKCU "Software\Rime\Weasel\UserMode" "InstallDir"
+RequestExecutionLevel user
+SetCompressor /SOLID lzma
+ShowInstDetails show
+ShowUninstDetails show
+
+!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WeaselUserMode"
+!define USERMODE_KEY "Software\Rime\Weasel\UserMode"
+
+Function StopUserModeProcesses
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r0'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE_PATH", w "$INSTDIR") i.r0'
+  ; Stop the frontend first so it cannot reconnect and relaunch the server.
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
+
+  ; Ask the user-mode server to exit cleanly before replacing runtime files.
+  IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
+    nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
+
+  ; Fallback for a hung server/deployer. These are current-user processes in
+  ; the no-admin installation, so no elevation is required.
+')} | Stop-Process -Force"'
+  Sleep 500
+FunctionEnd
+
+Function un.StopUserModeProcesses
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r0'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE_PATH", w "$INSTDIR") i.r0'
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
+
+  IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
+    nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
+
+  ; Only kill server/deployer processes running from our install directory.
+  ; Do not terminate an unrelated native WeaselServer.exe.
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process -Name WeaselServer,WeaselDeployer -ErrorAction SilentlyContinue | Where-Object {$_.Path -and [IO.Path]::GetDirectoryName($_.Path) -eq [Environment]::GetEnvironmentVariable(Unicode true
+
+!ifndef PRODUCT_VERSION
+  !define PRODUCT_VERSION "dev"
+!endif
+
+Name "Weasel User Mode"
+OutFile "..\output\archives\weasel-user-mode-${PRODUCT_VERSION}-installer.exe"
+InstallDir "$LOCALAPPDATA\Rime\WeaselUserMode"
+InstallDirRegKey HKCU "Software\Rime\Weasel\UserMode" "InstallDir"
+RequestExecutionLevel user
+SetCompressor /SOLID lzma
+ShowInstDetails show
+ShowUninstDetails show
+
+!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WeaselUserMode"
+!define USERMODE_KEY "Software\Rime\Weasel\UserMode"
+
+Function StopUserModeProcesses
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r0'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE_PATH", w "$INSTDIR") i.r0'
   ; Stop the frontend first so it cannot reconnect and relaunch the server.
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
 
@@ -32,13 +140,57 @@ Function StopUserModeProcesses
 FunctionEnd
 
 Function un.StopUserModeProcesses
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r0'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE_PATH", w "$INSTDIR") i.r0'
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
 
   IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
     nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
 
+'WEASEL_USER_MODE_PATHUnicode true
+
+!ifndef PRODUCT_VERSION
+  !define PRODUCT_VERSION "dev"
+!endif
+
+Name "Weasel User Mode"
+OutFile "..\output\archives\weasel-user-mode-${PRODUCT_VERSION}-installer.exe"
+InstallDir "$LOCALAPPDATA\Rime\WeaselUserMode"
+InstallDirRegKey HKCU "Software\Rime\Weasel\UserMode" "InstallDir"
+RequestExecutionLevel user
+SetCompressor /SOLID lzma
+ShowInstDetails show
+ShowUninstDetails show
+
+!define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WeaselUserMode"
+!define USERMODE_KEY "Software\Rime\Weasel\UserMode"
+
+Function StopUserModeProcesses
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r0'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE_PATH", w "$INSTDIR") i.r0'
+  ; Stop the frontend first so it cannot reconnect and relaunch the server.
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
+
+  ; Ask the user-mode server to exit cleanly before replacing runtime files.
+  IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
+    nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
+
+  ; Fallback for a hung server/deployer. These are current-user processes in
+  ; the no-admin installation, so no elevation is required.
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselServer.exe /F'
   nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselDeployer.exe /F'
+  Sleep 500
+FunctionEnd
+
+Function un.StopUserModeProcesses
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r0'
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE_PATH", w "$INSTDIR") i.r0'
+  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
+
+  IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
+    nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
+
+')} | Stop-Process -Force"'
   Sleep 500
 FunctionEnd
 
@@ -75,6 +227,15 @@ Section "Weasel User Mode" SecMain
 
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+
+  ; The standard installer does this too. Without deployment a fresh user's
+  ; Rime schema/config may not exist and input will silently pass through.
+  ExecWait '"$INSTDIR\WeaselDeployer.exe" /deploy' $0
+  IntCmp $0 0 deploy_ok deploy_error deploy_error
+  deploy_error:
+    MessageBox MB_OK|MB_ICONSTOP "Rime data deployment failed (exit code $0)."
+    Abort
+  deploy_ok:
 
   WriteRegStr HKCU "${USERMODE_KEY}" "InstallDir" "$INSTDIR"
   WriteRegDWORD HKCU "${USERMODE_KEY}" "StartEnabled" 1
