@@ -5,6 +5,16 @@
 
 fs::path WeaselUserDataPath() {
   WCHAR _path[MAX_PATH] = {0};
+  // Keep portable Rime databases separate from an existing native Weasel.
+  // Both the user-mode server and its deployer inherit this environment flag.
+  WCHAR user_mode[4] = {};
+  if (GetEnvironmentVariableW(L"WEASEL_USER_MODE", user_mode,
+                              _countof(user_mode)) == 1 &&
+      user_mode[0] == L'1') {
+    ExpandEnvironmentStringsW(L"%AppData%\\WeaselUserMode", _path,
+                              _countof(_path));
+    return fs::path(_path);
+  }
   const WCHAR KEY[] = L"Software\\Rime\\Weasel";
   HKEY hKey;
   LSTATUS ret = RegOpenKey(HKEY_CURRENT_USER, KEY, &hKey);
