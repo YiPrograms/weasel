@@ -49,8 +49,8 @@ bool ConvertKeyEvent(UINT vkey,
   memcpy(table, keyState, sizeof(table));
   table[VK_CONTROL] = 0;
   table[VK_MENU] = 0;
-  int ret = ToUnicodeEx(vkey, UINT(kinfo), table, buf, buf_len, 0,
-                        keyboard_layout);
+  int ret =
+      ToUnicodeEx(vkey, UINT(kinfo), table, buf, buf_len, 0, keyboard_layout);
   if (ret == 1) {
     result.keycode = UINT(buf[0]);
     return true;
