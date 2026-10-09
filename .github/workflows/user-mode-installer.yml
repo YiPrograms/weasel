@@ -110,6 +110,23 @@ jobs:
             throw 'Missing OpenCC data'
           }
 
+      # Tests that the actual built server/Rime runtime can turn "nihao"
+      # into Chinese over the portable IPC pipe. This does not test GUI hooks.
+      - name: Smoke test portable Rime IPC
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:WEASEL_USER_MODE = '1'
+          & .\output\WeaselDeployer.exe /deploy
+          if ($LASTEXITCODE -ne 0) {
+            throw "Rime deployment failed: $LASTEXITCODE"
+          }
+          & .\output\WeaselUserMode.exe --ipc-smoke
+          if ($LASTEXITCODE -ne 0) {
+            throw "Portable Rime IPC conversion failed: $LASTEXITCODE"
+          }
+
       - name: Build no-admin installer
         shell: pwsh
         run: |
