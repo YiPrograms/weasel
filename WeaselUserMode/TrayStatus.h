@@ -12,6 +12,8 @@ enum class TrayMode { Chinese, English, Paused, Off, Error };
 class TrayStatus {
  public:
   using Callback = std::function<void()>;
+  using OverlaySetter = std::function<void(int)>;
+  using OverlayGetter = std::function<int()>;
   static constexpr wchar_t kWindowClass[] = L"WeaselUserModeFrontendWindow";
   static constexpr UINT kActivateMessage = WM_APP + 52;
   static constexpr UINT kTrayMessage = WM_APP + 51;
@@ -20,11 +22,15 @@ class TrayStatus {
               Callback toggle,
               Callback settings,
               Callback deploy,
-              Callback quit) {
+              Callback quit,
+              OverlaySetter set_overlay,
+              OverlayGetter get_overlay) {
     toggle_ = std::move(toggle);
     settings_ = std::move(settings);
     deploy_ = std::move(deploy);
     quit_ = std::move(quit);
+    set_overlay_ = std::move(set_overlay);
+    get_overlay_ = std::move(get_overlay);
     WNDCLASSW wc = {};
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = instance;
@@ -171,6 +177,18 @@ class TrayStatus {
                 mode_ == TrayMode::Off ? L"啟用 User Mode" : L"停用 User Mode");
     AppendMenuW(menu, MF_STRING, 101, L"輸入法設定");
     AppendMenuW(menu, MF_STRING, 102, L"重新部署 Rime");
+    HMENU overlay_menu = CreatePopupMenu();
+    if (overlay_menu) {
+      const wchar_t* labels[] = {L"關閉（候選窗顯示注音）", L"自適應半透明",
+                                 L"完全透明", L"固定白底"};
+      const int selected = get_overlay_ ? get_overlay_() : 1;
+      for (int index = 0; index < 4; ++index)
+        AppendMenuW(overlay_menu,
+                    MF_STRING | (selected == index ? MF_CHECKED : MF_UNCHECKED),
+                    110 + index, labels[index]);
+      AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(overlay_menu),
+                  L"Preedit 顯示模式");
+    }
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, 103, L"結束 User Mode");
     POINT point = {};
@@ -189,6 +207,8 @@ class TrayStatus {
       deploy_();
     if (action == 103 && quit_)
       quit_();
+    if (action >= 110 && action <= 113 && set_overlay_)
+      set_overlay_(static_cast<int>(action - 110));
   }
 
   static LRESULT CALLBACK WindowProc(HWND hwnd,
@@ -231,4 +251,6 @@ class TrayStatus {
   std::wstring reason_;
   std::array<HICON, 5> icons_{};
   Callback toggle_, settings_, deploy_, quit_;
+  OverlaySetter set_overlay_;
+  OverlayGetter get_overlay_;
 };
