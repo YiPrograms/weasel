@@ -82,8 +82,10 @@ class PreeditOverlay {
 
     const int pad_x = mode == PreeditMode::Transparent ? 2 : 6;
     const int pad_y = mode == PreeditMode::Transparent ? 2 : 3;
-    const int width = (std::min)(640, (std::max)(18, size.cx + pad_x * 2));
-    const int height = (std::max)(18, metrics.tmHeight + pad_y * 2 + 2);
+    const int width = (std::min)(640, (std::max)(18,
+        static_cast<int>(size.cx) + pad_x * 2));
+    const int height = (std::max)(18,
+        static_cast<int>(metrics.tmHeight) + pad_y * 2 + 2);
     const int left = caret.left;
     const int top = caret.top;
     const bool changed = !visible_ || text != text_ || mode != mode_ ||
