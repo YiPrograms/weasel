@@ -14,6 +14,7 @@ on:
       - 'include/**'
       - 'resource/**'
       - 'xmake.lua'
+      - 'get-rime.ps1'
       - '.github/workflows/user-mode-installer.yml'
   workflow_dispatch:
 
@@ -63,9 +64,14 @@ jobs:
 
       - name: Get prebuilt librime
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           .\get-rime.ps1 -use dev
+          @('include\rime_api.h', 'include\rime_levers_api.h', 'lib64\rime.lib', 'output\rime.dll') | ForEach-Object {
+            if (-not (Test-Path $_)) { throw "Missing librime dependency: $_" }
+          }
 
       - name: Build shared data
         shell: pwsh
