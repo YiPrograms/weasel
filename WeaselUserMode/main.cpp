@@ -21,12 +21,19 @@
 #include <KeyEvent.h>
 #include <ResponseParser.h>
 #include <WeaselIPC.h>
+#include <resource.h>
 #include "TrayStatus.h"
+#include "PreeditOverlay.h"
 
 namespace {
 
 HHOOK g_keyboard_hook = nullptr;
 TrayStatus g_tray;
+PreeditOverlay g_overlay;
+PreeditMode g_overlay_mode = PreeditMode::Auto;
+std::mutex g_preedit_mutex;
+std::wstring g_preedit_text;
+bool g_toggle_space_down = false;
 HANDLE g_single_instance = nullptr;
 std::atomic<bool> g_ascii_mode{false};
 std::atomic<bool> g_composing{false};
@@ -47,6 +54,7 @@ struct QueuedKey {
   DWORD scan_code = 0;
   DWORD flags = 0;
   bool key_up = false;
+  bool language_toggle = false;
   HWND destination = nullptr;
   uint64_t epoch = 0;
   ULONGLONG event_time_ms = 0;
@@ -142,11 +150,14 @@ bool LaunchDeployer(const wchar_t* arguments) {
 
 bool DrainResponse(std::wstring* commit = nullptr) {
   weasel::Status status;
-  weasel::ResponseParser parser(commit, nullptr, &status);
+  weasel::Context context;
+  weasel::ResponseParser parser(commit, &context, &status);
   const bool result = UserModeClient().GetResponseData(std::ref(parser));
   if (result) {
     g_ascii_mode = status.ascii_mode;
     g_composing = status.composing;
+    std::lock_guard<std::mutex> guard(g_preedit_mutex);
+    g_preedit_text = status.composing ? context.preedit.str : L"";
   }
   return result;
 }
@@ -157,6 +168,25 @@ DWORD ReadUserModeDword(const wchar_t* name, DWORD fallback) {
   RegGetValueW(HKEY_CURRENT_USER, kUserModeRegistryKey, name, RRF_RT_REG_DWORD,
                nullptr, &value, &size);
   return value;
+}
+
+PreeditMode LoadOverlayMode() {
+  const DWORD value = ReadUserModeDword(L"OverlayMode", 1);
+  return value <= 3 ? static_cast<PreeditMode>(value) : PreeditMode::Auto;
+}
+
+void SetOverlayMode(int value) {
+  if (value < 0 || value > 3) return;
+  g_overlay_mode = static_cast<PreeditMode>(value);
+  g_overlay.Hide();
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, kUserModeRegistryKey, 0, nullptr, 0,
+                      KEY_SET_VALUE, nullptr, &key, nullptr) == ERROR_SUCCESS) {
+    const DWORD selected = static_cast<DWORD>(value);
+    RegSetValueExW(key, L"OverlayMode", 0, REG_DWORD,
+                   reinterpret_cast<const BYTE*>(&selected), sizeof(selected));
+    RegCloseKey(key);
+  }
 }
 
 HotkeyConfig LoadToggleHotkey() {
@@ -291,6 +321,16 @@ int RunIpcSmokeTest() {
   DrainResponse(&segment);
   committed += segment;
 
+  // Ensure mode switching works without any scheme-specific Ctrl+Space binding.
+  UserModeClient().TrayCommand(ID_WEASELTRAY_ENABLE_ASCII);
+  UserModeClient().ProcessKeyEvent(weasel::KeyEvent(ibus::Control_L, 0));
+  DrainResponse();
+  const bool ascii_on = g_ascii_mode.load();
+  UserModeClient().TrayCommand(ID_WEASELTRAY_DISABLE_ASCII);
+  UserModeClient().ProcessKeyEvent(weasel::KeyEvent(ibus::Control_L, 0));
+  DrainResponse();
+  const bool ascii_off = !g_ascii_mode.load();
+
   UserModeClient().EndSession();
   UserModeClient().ShutdownServer();
   UserModeClient().Disconnect();
@@ -307,6 +347,8 @@ int RunIpcSmokeTest() {
     return 11;
   if (!contains_chinese)
     return 12;
+  if (!ascii_on || !ascii_off)
+    return 20;
   return 0;
 }
 
@@ -478,6 +520,53 @@ RECT GetInputPosition() {
   return result;
 }
 
+// Overlay must never follow the approximate fallback position used by the
+// candidate popup. Only use a caret actually reported by UIA or Win32.
+bool GetOverlayCaret(RECT& result) {
+  const HWND foreground = GetForegroundWindow();
+  if (!foreground) return false;
+  {
+    std::lock_guard<std::mutex> guard(g_caret_mutex);
+    if (g_uia_window == foreground && g_uia_timestamp &&
+        GetTickCount64() - g_uia_timestamp < 700) {
+      result = g_uia_caret;
+      return result.bottom > result.top;
+    }
+  }
+  GUITHREADINFO info = {};
+  info.cbSize = sizeof(info);
+  const DWORD thread_id = GetWindowThreadProcessId(foreground, nullptr);
+  if (!thread_id || !GetGUIThreadInfo(thread_id, &info) || !info.hwndCaret)
+    return false;
+  POINT top_left = {info.rcCaret.left, info.rcCaret.top};
+  POINT bottom_right = {info.rcCaret.right, info.rcCaret.bottom};
+  if (!ClientToScreen(info.hwndCaret, &top_left) ||
+      !ClientToScreen(info.hwndCaret, &bottom_right))
+    return false;
+  result = {top_left.x, top_left.y, bottom_right.x,
+            std::max(bottom_right.y, top_left.y + 18)};
+  return true;
+}
+
+void RefreshOverlay() {
+  if (!g_user_enabled || !g_intercepting || g_fail_open.load() ||
+      g_overlay_mode == PreeditMode::Off || g_ascii_mode.load()) {
+    g_overlay.Hide();
+    return;
+  }
+  RECT caret = {};
+  if (!GetOverlayCaret(caret)) {
+    g_overlay.Hide();
+    return;
+  }
+  std::wstring preedit;
+  {
+    std::lock_guard<std::mutex> guard(g_preedit_mutex);
+    preedit = g_preedit_text;
+  }
+  g_overlay.Update(preedit, caret, g_overlay_mode);
+}
+
 // ImmIsIME() can return TRUE for a regular keyboard HKL (verified on the
 // Windows 10 test VM: English US = 0x04090409). The real layout must be
 // classified using its IME DLL/profile ID, not ImmIsIME() alone.
@@ -571,6 +660,12 @@ void StopInterception() {
   g_queue_cv.notify_one();
   g_intercepting = false;
   g_swallowed_keys.fill(false);
+  g_toggle_space_down = false;
+  {
+    std::lock_guard<std::mutex> guard(g_preedit_mutex);
+    g_preedit_text.clear();
+  }
+  g_overlay.Hide();
 }
 
 void UpdateTray() {
@@ -846,6 +941,20 @@ void WorkerLoop() {
             key.destination != GetForegroundWindow() || g_fail_open.load())
           continue;
 
+        // Ctrl+Space is a frontend shortcut, independent of Rime schemas.
+        // Only the worker touches IPC; the low-level keyboard hook never blocks.
+        if (key.language_toggle) {
+          if (!key.key_up) {
+            UserModeClient().TrayCommand(
+                g_ascii_mode.load() ? ID_WEASELTRAY_DISABLE_ASCII
+                                    : ID_WEASELTRAY_ENABLE_ASCII);
+            UserModeClient().ProcessKeyEvent(
+                weasel::KeyEvent(ibus::Control_L, 0)); // refresh status/ctx
+            DrainResponse();
+          }
+          continue;
+        }
+
         // The first candidate must use the current caret, before key IPC.
         UserModeClient().UpdateInputPosition(GetInputPosition());
         g_inflight_ms = GetTickCount64();
@@ -940,6 +1049,15 @@ LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
   pending.scan_code = hook.scanCode;
   pending.flags = hook.flags;
   pending.key_up = key_up;
+  // Remember the key-down classification so releasing Ctrl early does not
+  // leak the Space key-up into the target application.
+  if (hook.vkCode == VK_SPACE) {
+    if (key_down && IsPressed(VK_CONTROL))
+      g_toggle_space_down = true;
+    pending.language_toggle = g_toggle_space_down;
+    if (key_up)
+      g_toggle_space_down = false;
+  }
   pending.destination = g_foreground_window;
   pending.epoch = g_epoch.load();
   pending.event_time_ms = GetTickCount64();
@@ -1012,13 +1130,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     return 0;
   }
 
+  g_overlay_mode = LoadOverlayMode();
   if (!g_tray.Create(
           instance, ToggleUserMode, [] { LaunchDeployer(L""); },
-          [] { LaunchDeployer(L"/deploy"); }, [] { PostQuitMessage(0); })) {
+          [] { LaunchDeployer(L"/deploy"); }, [] { PostQuitMessage(0); },
+          [](int mode) { SetOverlayMode(mode); },
+          [] { return static_cast<int>(g_overlay_mode); })) {
     ReleaseMutex(g_single_instance);
     CloseHandle(g_single_instance);
     return 8;
   }
+  // No TSF profile or global injection is needed for this click-through popup.
+  g_overlay.Create(instance);
   const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   const bool com_initialized = SUCCEEDED(com_result);
   if (com_initialized) {
@@ -1036,6 +1159,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
   RegisterHotKey(nullptr, kExitHotkeyId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
                  VK_F12);
   const UINT_PTR input_mode_timer = SetTimer(nullptr, 1, 125, nullptr);
+  const UINT_PTR overlay_timer = SetTimer(nullptr, 2, 40, nullptr);
 
   g_keyboard_hook =
       SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHook, instance, 0);
@@ -1044,6 +1168,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
                 L"Weasel User Mode", MB_OK | MB_ICONERROR);
     if (input_mode_timer)
       KillTimer(nullptr, input_mode_timer);
+    if (overlay_timer)
+      KillTimer(nullptr, overlay_timer);
+    g_overlay.Destroy();
     UnregisterHotKey(nullptr, kExitHotkeyId);
     if (toggle_hotkey_registered)
       UnregisterHotKey(nullptr, kToggleHotkeyId);
@@ -1070,6 +1197,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
       }
       continue;
     }
+    if (message.message == WM_TIMER && message.wParam == overlay_timer) {
+      RefreshOverlay();
+      continue;
+    }
     if (message.message == WM_TIMER && message.wParam == input_mode_timer) {
       const ULONGLONG now = GetTickCount64();
       const ULONGLONG queued = g_oldest_queued_ms.load();
@@ -1093,6 +1224,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
   g_keyboard_hook = nullptr;
   if (input_mode_timer)
     KillTimer(nullptr, input_mode_timer);
+  if (overlay_timer)
+    KillTimer(nullptr, overlay_timer);
+  g_overlay.Destroy();
   UnregisterHotKey(nullptr, kExitHotkeyId);
   if (toggle_hotkey_registered)
     UnregisterHotKey(nullptr, kToggleHotkeyId);
