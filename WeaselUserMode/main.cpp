@@ -550,7 +550,7 @@ bool GetOverlayCaret(RECT& result) {
 
 void RefreshOverlay() {
   if (!g_user_enabled || !g_intercepting || g_fail_open.load() ||
-      g_overlay_mode == PreeditMode::Off || g_ascii_mode.load()) {
+      g_overlay_mode == PreeditMode::Off) {
     g_overlay.Hide();
     return;
   }
@@ -1147,7 +1147,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     return 8;
   }
   // No TSF profile or global injection is needed for this click-through popup.
-  g_overlay.Create(instance);
+  if (!g_overlay.Create(instance))
+    SetOverlayMode(0);  // Never suppress server preedit if overlay is unavailable.
   const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   const bool com_initialized = SUCCEEDED(com_result);
   if (com_initialized) {
