@@ -1,7 +1,7 @@
 # Weasel settings
 # encoding: utf-8
 
-config_version: "0.24"
+config_version: "0.25"
 
 app_options:
   cmd.exe:
