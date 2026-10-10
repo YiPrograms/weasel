@@ -1,10 +1,13 @@
 #include <windows.h>
 #include <imm.h>
 #include <msctf.h>
+#include <UIAutomation.h>
+#include <oleauto.h>
 
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -13,6 +16,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <wrl/client.h>
 
 #include <KeyEvent.h>
 #include <ResponseParser.h>
@@ -56,6 +60,11 @@ std::mutex g_queue_mutex;
 std::condition_variable g_queue_cv;
 std::deque<QueuedKey> g_queue;
 std::thread g_worker;
+std::thread g_caret_worker;
+std::mutex g_caret_mutex;
+RECT g_uia_caret = {};
+HWND g_uia_window = nullptr;
+ULONGLONG g_uia_timestamp = 0;
 std::atomic<bool> g_stop_worker{false};
 std::atomic<bool> g_worker_ready{false};
 std::atomic<bool> g_fail_open{false};
@@ -314,9 +323,128 @@ void SendUnicode(const std::wstring& text) {
   }
 }
 
+// Retrieve the actual screen-space insertion point exposed by Chromium/Edge,
+// Firefox and other UI Automation text providers. The UIA provider is out of
+// process and may stall; it must never be called from the keyboard hook or the
+// Rime IPC worker. A dedicated MTA sampler publishes a recent rectangle.
+bool BoundsForTextRange(IUIAutomationTextRange* range, RECT& result) {
+  if (!range)
+    return false;
+  SAFEARRAY* coords = nullptr;
+  if (FAILED(range->GetBoundingRectangles(&coords)) || !coords)
+    return false;
+  long lower = 0;
+  long upper = -1;
+  const bool valid = SafeArrayGetDim(coords) == 1 &&
+                     SUCCEEDED(SafeArrayGetLBound(coords, 1, &lower)) &&
+                     SUCCEEDED(SafeArrayGetUBound(coords, 1, &upper)) &&
+                     (upper - lower + 1) >= 4;
+  if (!valid) {
+    SafeArrayDestroy(coords);
+    return false;
+  }
+  // For a nonempty selection, anchor to the final visible text rectangle.
+  long position = upper - 3;
+  double rect[4] = {};
+  for (int i = 0; i < 4; ++i) {
+    long index = position + i;
+    if (FAILED(SafeArrayGetElement(coords, &index, &rect[i]))) {
+      SafeArrayDestroy(coords);
+      return false;
+    }
+  }
+  SafeArrayDestroy(coords);
+  if (!std::isfinite(rect[0]) || !std::isfinite(rect[1]) ||
+      !std::isfinite(rect[2]) || !std::isfinite(rect[3]) || rect[3] <= 0 ||
+      rect[3] > 400 || rect[2] < 0)
+    return false;
+  result.left = static_cast<LONG>(std::lround(rect[0]));
+  result.top = static_cast<LONG>(std::lround(rect[1]));
+  result.right = result.left + 2;
+  result.bottom = result.top + static_cast<LONG>(std::lround(rect[3]));
+  return true;
+}
+
+bool GetAutomationCaret(IUIAutomation* automation,
+                        HWND foreground,
+                        RECT& rect) {
+  if (!automation || !foreground)
+    return false;
+  Microsoft::WRL::ComPtr<IUIAutomationElement> focused;
+  if (FAILED(automation->GetFocusedElement(&focused)) || !focused)
+    return false;
+  int focused_process = 0;
+  DWORD foreground_process = 0;
+  GetWindowThreadProcessId(foreground, &foreground_process);
+  if (FAILED(focused->get_CurrentProcessId(&focused_process)) ||
+      static_cast<DWORD>(focused_process) != foreground_process)
+    return false;
+
+  Microsoft::WRL::ComPtr<IUIAutomationTextPattern2> text2;
+  if (SUCCEEDED(focused->GetCurrentPatternAs(UIA_TextPattern2Id,
+                                             IID_PPV_ARGS(&text2))) &&
+      text2) {
+    BOOL active = FALSE;
+    Microsoft::WRL::ComPtr<IUIAutomationTextRange> range;
+    if (SUCCEEDED(text2->GetCaretRange(&active, &range)) && active &&
+        BoundsForTextRange(range.Get(), rect))
+      return true;
+  }
+
+  Microsoft::WRL::ComPtr<IUIAutomationTextPattern> text;
+  if (SUCCEEDED(focused->GetCurrentPatternAs(UIA_TextPatternId,
+                                             IID_PPV_ARGS(&text))) &&
+      text) {
+    Microsoft::WRL::ComPtr<IUIAutomationTextRangeArray> selection;
+    if (SUCCEEDED(text->GetSelection(&selection)) && selection) {
+      int count = 0;
+      if (SUCCEEDED(selection->get_Length(&count)) && count > 0) {
+        Microsoft::WRL::ComPtr<IUIAutomationTextRange> range;
+        if (SUCCEEDED(selection->GetElement(count - 1, &range)) &&
+            BoundsForTextRange(range.Get(), rect))
+          return true;
+      }
+    }
+  }
+  return false;
+}
+
+void CaretSamplerLoop() {
+  const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  if (FAILED(initialized))
+    return;
+  Microsoft::WRL::ComPtr<IUIAutomation> automation;
+  CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
+                   IID_PPV_ARGS(&automation));
+  while (!g_stop_worker.load()) {
+    const HWND foreground = g_requested_window.load();
+    RECT caret = {};
+    const bool found = foreground && foreground == GetForegroundWindow() &&
+                       GetAutomationCaret(automation.Get(), foreground, caret);
+    {
+      std::lock_guard<std::mutex> guard(g_caret_mutex);
+      g_uia_window = found ? foreground : nullptr;
+      g_uia_caret = caret;
+      g_uia_timestamp = found ? GetTickCount64() : 0;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+  }
+  automation.Reset();
+  CoUninitialize();
+}
+
 RECT GetInputPosition() {
   RECT result = {};
   const HWND foreground = GetForegroundWindow();
+  // UIA positions are physical screen coordinates, not HWND client-relative.
+  // Prefer a fresh caret rectangle from the dedicated accessibility sampler.
+  {
+    std::lock_guard<std::mutex> guard(g_caret_mutex);
+    const ULONGLONG now = GetTickCount64();
+    if (foreground && g_uia_window == foreground && g_uia_timestamp &&
+        now - g_uia_timestamp < 700)
+      return g_uia_caret;
+  }
   const DWORD thread_id = GetWindowThreadProcessId(foreground, nullptr);
   GUITHREADINFO info = {};
   info.cbSize = sizeof(info);
@@ -927,6 +1055,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     CloseHandle(g_single_instance);
     return 3;
   }
+  g_caret_worker = std::thread(CaretSamplerLoop);
   g_worker = std::thread(WorkerLoop);
 
   MSG message = {};
@@ -976,6 +1105,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
       ExitProcess(0);
     }
     g_worker.join();
+  }
+  if (g_caret_worker.joinable()) {
+    if (WaitForSingleObject(g_caret_worker.native_handle(), 2000) ==
+        WAIT_TIMEOUT) {
+      g_tray.Destroy();
+      ExitProcess(0);
+    }
+    g_caret_worker.join();
   }
   if (g_profile_manager) {
     g_profile_manager->Release();
