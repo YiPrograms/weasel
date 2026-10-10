@@ -127,6 +127,29 @@ jobs:
             throw "Portable Rime IPC conversion failed: $($smoke.ExitCode)"
           }
 
+      - name: Verify single-instance guard
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $frontend = (Resolve-Path '.\output\WeaselUserMode.exe').Path
+          $holder = Start-Process -FilePath $frontend -ArgumentList '--singleton-hold' -PassThru
+          try {
+            Start-Sleep -Seconds 1
+            if ($holder.HasExited) {
+              throw "Singleton holder exited prematurely: $($holder.ExitCode)"
+            }
+            $duplicate = Start-Process -FilePath $frontend -ArgumentList '--singleton-hold' -PassThru -Wait
+            if ($duplicate.ExitCode -ne 17) {
+              throw "Second instance was not rejected: $($duplicate.ExitCode)"
+            }
+            $holder.WaitForExit(5000) | Out-Null
+            if (!$holder.HasExited -or $holder.ExitCode -ne 0) {
+              throw 'Singleton holder did not finish cleanly'
+            }
+          } finally {
+            if (!$holder.HasExited) { Stop-Process -Id $holder.Id -Force }
+          }
+
       - name: Build no-admin installer
         shell: pwsh
         run: |
