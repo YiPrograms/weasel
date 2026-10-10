@@ -354,8 +354,8 @@ int RunIpcSmokeTest() {
     any_key_handled |= UserModeClient().ProcessKeyEvent(key);
     SmokeTrace("after-process-key");
     std::wstring segment;
-    DrainResponse(&segment);
-    SmokeTrace("after-key-response");
+    DrainResponse(&segment, true);
+    SmokeTrace("after-key-response-with-preedit");
     committed += segment;
   }
 
@@ -363,7 +363,7 @@ int RunIpcSmokeTest() {
   SmokeTrace("before-space");
   any_key_handled |= UserModeClient().ProcessKeyEvent(space);
   std::wstring segment;
-  DrainResponse(&segment);
+  DrainResponse(&segment, true);
   SmokeTrace("after-space");
   committed += segment;
 
