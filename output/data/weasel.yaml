@@ -1,7 +1,7 @@
 # Weasel settings
 # encoding: utf-8
 
-config_version: "0.25"
+config_version: "0.26"
 
 app_options:
   cmd.exe:
@@ -20,7 +20,7 @@ style:
   ascii_tip_follow_cursor: false
   color_scheme: screenshot_orange
   font_face: Noto Sans TC
-  label_font_face: Cascadia Mono
+  label_font_face: Consolas
   comment_font_face: Noto Sans TC
   font_point: 28
   label_font_point: 28
