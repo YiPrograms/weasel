@@ -149,16 +149,21 @@ bool LaunchDeployer(const wchar_t* arguments) {
   return true;
 }
 
-bool DrainResponse(std::wstring* commit = nullptr) {
-  weasel::Status status;
+// Bootstrap/start-session responses may omit a complete composition context.
+// Parse composition only after key processing, never while establishing IPC.
+bool DrainResponse(std::wstring* commit = nullptr, bool capture_preedit = false) {
+  weasel::Status status{};
   weasel::Context context;
-  weasel::ResponseParser parser(commit, &context, &status);
+  weasel::ResponseParser parser(commit, capture_preedit ? &context : nullptr,
+                                &status);
   const bool result = UserModeClient().GetResponseData(std::ref(parser));
   if (result) {
     g_ascii_mode = status.ascii_mode;
     g_composing = status.composing;
-    std::lock_guard<std::mutex> guard(g_preedit_mutex);
-    g_preedit_text = status.composing ? context.preedit.str : L"";
+    if (capture_preedit) {
+      std::lock_guard<std::mutex> guard(g_preedit_mutex);
+      g_preedit_text = status.composing ? context.preedit.str : L"";
+    }
   }
   return result;
 }
@@ -271,28 +276,42 @@ bool RegisterToggleHotkey() {
   return false;
 }
 
+void SmokeTrace(const char* stage);
+std::atomic<bool> g_smoke_test_mode{false};
+void TraceBootstrap(const char* stage) {
+  if (g_smoke_test_mode.load()) SmokeTrace(stage);
+}
 bool ConnectServer() {
+  TraceBootstrap("bootstrap:before-echo");
   if (UserModeClient().Echo())
     return true;
-
+  TraceBootstrap("bootstrap:before-disconnect");
   UserModeClient().Disconnect();
+  TraceBootstrap("bootstrap:before-connect");
   if (UserModeClient().Connect()) {
+    TraceBootstrap("bootstrap:connected-to-existing");
     UserModeClient().StartSession();
+    TraceBootstrap("bootstrap:session-started");
     DrainResponse();
+    TraceBootstrap("bootstrap:response-drained");
     if (UserModeClient().Echo())
       return true;
     UserModeClient().Disconnect();
   }
 
+  TraceBootstrap("bootstrap:before-launch-server");
   if (!LaunchServer())
     return false;
-
+  TraceBootstrap("bootstrap:server-launched");
   for (int attempt = 0; attempt < 30; ++attempt) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     if (!UserModeClient().Connect())
       continue;
+    TraceBootstrap("bootstrap:connected-after-launch");
     UserModeClient().StartSession();
+    TraceBootstrap("bootstrap:session-started-after-launch");
     DrainResponse();
+    TraceBootstrap("bootstrap:response-drained-after-launch");
     if (UserModeClient().Echo())
       return true;
     UserModeClient().Disconnect();
@@ -320,6 +339,7 @@ void SmokeTrace(const char* stage) {
 // Verifies the *real* packaged WeaselServer/Rime IPC path without a TSF IME.
 // This is not a desktop keyboard-hook/Notepad end-to-end test.
 int RunIpcSmokeTest() {
+  g_smoke_test_mode = true;
   SmokeTrace("starting");
   if (!ConnectServer())
     return 10;
@@ -1000,7 +1020,7 @@ void WorkerLoop() {
         std::wstring commit;
         try {
           handled = UserModeClient().ProcessKeyEvent(key.event);
-          DrainResponse(&commit);
+          DrainResponse(&commit, true);
         } catch (...) {
           connected = false;
           g_worker_ready = false;
