@@ -48,6 +48,9 @@ struct QueuedKey {
 };
 
 constexpr size_t kMaxQueuedKeys = 128;
+// Mark our own SendInput events without excluding other input injectors such
+// as Remote Desktop and accessibility tools from the input frontend.
+constexpr ULONG_PTR kOurInjectedKeyTag = 0x5745534C;
 std::mutex g_queue_mutex;
 std::condition_variable g_queue_cv;
 std::deque<QueuedKey> g_queue;
@@ -301,6 +304,7 @@ void SendUnicode(const std::wstring& text) {
     inputs[0].type = INPUT_KEYBOARD;
     inputs[0].ki.wScan = ch;
     inputs[0].ki.dwFlags = KEYEVENTF_UNICODE;
+    inputs[0].ki.dwExtraInfo = kOurInjectedKeyTag;
     inputs[1] = inputs[0];
     inputs[1].ki.dwFlags |= KEYEVENTF_KEYUP;
     SendInput(ARRAYSIZE(inputs), inputs, sizeof(INPUT));
@@ -573,6 +577,7 @@ bool ShouldBypassSystemShortcut(const KBDLLHOOKSTRUCT& hook) {
 void ReplayPhysicalKey(const QueuedKey& key) {
   INPUT input = {};
   input.type = INPUT_KEYBOARD;
+  input.ki.dwExtraInfo = kOurInjectedKeyTag;
   if (key.scan_code) {
     input.ki.wScan = static_cast<WORD>(key.scan_code);
     input.ki.dwFlags = KEYEVENTF_SCANCODE;
@@ -712,7 +717,7 @@ LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
     return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
 
   const auto& hook = *reinterpret_cast<KBDLLHOOKSTRUCT*>(lparam);
-  if (hook.flags & LLKHF_INJECTED)
+  if ((hook.flags & LLKHF_INJECTED) && hook.dwExtraInfo == kOurInjectedKeyTag)
     return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
 
   const bool key_down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
