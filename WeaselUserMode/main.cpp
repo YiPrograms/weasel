@@ -150,20 +150,48 @@ bool LaunchDeployer(const wchar_t* arguments) {
   return true;
 }
 
-// Bootstrap/start-session responses may omit a complete composition context.
-// Parse composition only after key processing, never while establishing IPC.
+// The overlay only needs the preedit string, not the server-owned
+// candidate list. Do not hand a Context to the generic deserializer: doing so
+// also deserializes ctx.cand via Boost archive on every keystroke, and was
+// crashing the portable frontend on Windows (0xc0000005).
 bool DrainResponse(std::wstring* commit = nullptr, bool capture_preedit = false) {
   weasel::Status status{};
-  weasel::Context context;
-  weasel::ResponseParser parser(commit, capture_preedit ? &context : nullptr,
-                                &status);
-  const bool result = UserModeClient().GetResponseData(std::ref(parser));
+  weasel::ResponseParser parser(commit, nullptr, &status);
+  std::wstring preedit;
+  const auto response = [&](LPWSTR buffer, DWORD length) -> bool {
+    const bool parsed = parser(buffer, length);
+    if (!parsed || !capture_preedit)
+      return parsed;
+
+    // Reuse the already-received IPC buffer. Limit all reads to its length;
+    // the final "." line terminates the response, not a NUL byte.
+    constexpr wchar_t prefix[] = L"ctx.preedit=";
+    constexpr size_t prefix_size = (sizeof(prefix) / sizeof(wchar_t)) - 1;
+    for (size_t pos = 0; pos < length;) {
+      size_t end = pos;
+      while (end < length && buffer[end] != L'\n' && buffer[end] != L'\0')
+        ++end;
+      const size_t count = end - pos;
+      if (count == 1 && buffer[pos] == L'.')
+        break;
+      if (count >= prefix_size &&
+          wcsncmp(buffer + pos, prefix, prefix_size) == 0) {
+        preedit = unescape_string(
+            std::wstring(buffer + pos + prefix_size, count - prefix_size));
+      }
+      if (end == length || buffer[end] == L'\0')
+        break;
+      pos = end + 1;
+    }
+    return parsed;
+  };
+  const bool result = UserModeClient().GetResponseData(response);
   if (result) {
     g_ascii_mode = status.ascii_mode;
     g_composing = status.composing;
     if (capture_preedit) {
       std::lock_guard<std::mutex> guard(g_preedit_mutex);
-      g_preedit_text = status.composing ? context.preedit.str : L"";
+      g_preedit_text = status.composing ? std::move(preedit) : L"";
     }
   }
   return result;
@@ -348,6 +376,7 @@ int RunIpcSmokeTest() {
   SmokeTrace("connected");
   std::wstring committed;
   bool any_key_handled = false;
+  bool preedit_observed = false;
   for (const wchar_t ch : std::wstring(L"nihao")) {
     const weasel::KeyEvent key(static_cast<UINT>(ch), 0);
     SmokeTrace("before-typing");
@@ -355,6 +384,10 @@ int RunIpcSmokeTest() {
     SmokeTrace("after-process-key");
     std::wstring segment;
     DrainResponse(&segment, true);
+    {
+      std::lock_guard<std::mutex> guard(g_preedit_mutex);
+      preedit_observed |= !g_preedit_text.empty();
+    }
     SmokeTrace("after-key-response-with-preedit");
     committed += segment;
   }
@@ -402,6 +435,8 @@ int RunIpcSmokeTest() {
     return 12;
   if (!ascii_on || !ascii_off)
     return 20;
+  if (!preedit_observed)
+    return 21;
   return 0;
 }
 
