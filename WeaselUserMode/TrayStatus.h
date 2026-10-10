@@ -59,6 +59,10 @@ class TrayStatus {
     nid.uCallbackMessage = kTrayMessage;
     nid.hIcon = icons_[static_cast<size_t>(mode_)];
     std::wstring title = std::wstring(L"Weasel User Mode - ") + Label(mode_);
+    if (!reason_.empty()) {
+      title += L" | ";
+      title += reason_;
+    }
     wcsncpy_s(nid.szTip, title.c_str(), _TRUNCATE);
     if (!Shell_NotifyIconW(added_ ? NIM_MODIFY : NIM_ADD, &nid)) {
       added_ = false;
