@@ -426,43 +426,6 @@ void StopInterception() {
   g_swallowed_keys.fill(false);
 }
 
-enum class UserModeState {
-  kOff,
-  kArmed,
-  kActive,
-};
-
-UserModeState CurrentUserModeState() {
-  if (!g_user_enabled)
-    return UserModeState::kOff;
-  return g_intercepting ? UserModeState::kActive : UserModeState::kArmed;
-}
-
-void ShowUserModeState() {
-  if (g_fail_open.load()) {
-    g_tray.Notice(L"Rime 回應逾時，已停止攔截。請先停用再重新啟用。");
-    return;
-  }
-  const UserModeState state = CurrentUserModeState();
-  const wchar_t* message = nullptr;
-  switch (state) {
-    case UserModeState::kOff:
-      message = L"Weasel User Mode: OFF";
-      break;
-    case UserModeState::kActive:
-      message =
-          L"Weasel User Mode: ACTIVE\n\nKeyboard input is being handled by "
-          L"Rime.";
-      break;
-    case UserModeState::kArmed:
-      message =
-          L"Weasel User Mode: PAUSED\n\n目前焦點不是可接管的普通鍵盤輸入 "
-          L"（其他 IME、密碼欄位、較高權限程式或 Rime 尚未就緒）。";
-      break;
-  }
-  g_tray.Notice(message);
-}
-
 void UpdateTray() {
   if (!g_user_enabled) {
     g_tray.Update(TrayMode::Off, L"已關閉");
@@ -513,6 +476,12 @@ void ToggleUserMode() {
     RefreshForegroundSession();
   }
   UpdateTray();
+  // Enabling is asynchronous: the worker still needs to establish focus.
+  // Reporting PAUSED here would often be stale by the time the notice shows.
+  // The tray icon continues to report the actual Chinese/English/paused state.
+  g_tray.Notice(g_user_enabled
+                    ? L"User Mode 已啟用。請查看系統匣的中／英／停圖示。"
+                    : L"User Mode 已停用。");
 }
 
 void SetKeyStateForEvent(std::array<BYTE, 256>& state, DWORD vk, bool key_up) {
@@ -890,7 +859,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     if (message.message == WM_HOTKEY) {
       if (message.wParam == kToggleHotkeyId) {
         ToggleUserMode();
-        ShowUserModeState();
       } else if (message.wParam == kExitHotkeyId) {
         PostQuitMessage(0);
       }
