@@ -540,8 +540,23 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
     session_status.style.client_caps &= ~INLINE_PREEDIT_CAPABLE;
 
   if (!_ShowMessage(weasel_context, weasel_status)) {
-    m_ui->Hide();
+    // Native TSF/IME clients manage candidate visibility through their own
+    // candidate-list UI. The portable keyboard-hook frontend does not host
+    // that TSF interface, so show the server-owned popup while composing.
+    wchar_t user_mode[4] = {};
+    const bool portable =
+        GetEnvironmentVariableW(L"WEASEL_USER_MODE", user_mode,
+                                _countof(user_mode)) == 1 &&
+        user_mode[0] == L'1';
+    if (!portable)
+      m_ui->Hide();
     m_ui->Update(weasel_context, weasel_status);
+    if (portable) {
+      if (!weasel_context.preedit.empty() || !weasel_context.cinfo.empty())
+        m_ui->Show();
+      else
+        m_ui->Hide();
+    }
   }
 
   _RefreshTrayIcon(session_id, _UpdateUICallback);
