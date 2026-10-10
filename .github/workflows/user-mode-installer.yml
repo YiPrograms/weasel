@@ -127,6 +127,15 @@ jobs:
             throw "Portable Rime IPC conversion failed: $($smoke.ExitCode)"
           }
 
+      - name: Verify ordinary keyboard layout detection
+        shell: pwsh
+        run: |
+          $app = (Resolve-Path '.\output\WeaselUserMode.exe').Path
+          $test = Start-Process -FilePath $app -ArgumentList '--layout-smoke' -PassThru -Wait
+          if ($test.ExitCode -ne 0) {
+            throw "Plain keyboard layout classification failed: $($test.ExitCode)"
+          }
+
       - name: Verify single-instance guard
         shell: pwsh
         run: |
