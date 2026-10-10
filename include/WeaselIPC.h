@@ -185,10 +185,14 @@ inline std::wstring GetPipeName() {
   wchar_t user_mode[4] = {};
   if (GetEnvironmentVariableW(L"WEASEL_USER_MODE", user_mode,
                               _countof(user_mode)) == 1 &&
-      user_mode[0] == L'1')
-    pipe_name += L"WeaselUserModeNamedPipe";
-  else
+      user_mode[0] == L'1') {
+    DWORD session = 0;
+    ProcessIdToSessionId(GetCurrentProcessId(), &session);
+    pipe_name += L"WeaselUserModeNamedPipe_";
+    pipe_name += std::to_wstring(session);
+  } else {
     pipe_name += WEASEL_IPC_PIPE_NAME;
+  }
   return pipe_name;
 }
 }  // namespace weasel
