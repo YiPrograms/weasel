@@ -22,9 +22,9 @@ style:
   font_face: Noto Sans TC
   label_font_face: Cascadia Mono
   comment_font_face: Noto Sans TC
-  font_point: 26
-  label_font_point: 26
-  comment_font_point: 26
+  font_point: 28
+  label_font_point: 28
+  comment_font_point: 28
   candidate_abbreviate_length: 0
   click_to_capture: false
   horizontal: false
@@ -43,15 +43,15 @@ style:
   layout:
     align_type: center
     max_width: 0	#set 0 to disable max width
-    min_width: 180
+    min_width: 200
     min_height: 0
     max_height: 0	#set 0 to disable max height
     border_width: 2
-    margin_x: 8
+    margin_x: 10
     margin_y: 5
     spacing: 7
-    candidate_spacing: 15
-    hilite_spacing: 12
+    candidate_spacing: 34
+    hilite_spacing: 27
     hilite_padding: 7
     round_corner: 0   #别名 hilited_corner_radius
     corner_radius: 0
@@ -68,7 +68,7 @@ preset_color_schemes:
     text_color: 0x000000
     back_color: 0xffffff
     shadow_color: 0x00000000
-    border_color: 0x0091ff
+    border_color: 0x008cff
     hilited_text_color: 0x000000
     hilited_back_color: 0xffffff
     label_color: 0x000000
@@ -77,7 +77,7 @@ preset_color_schemes:
     candidate_back_color: 0xffffff
     candidate_shadow_color: 0x00000000
     hilited_candidate_text_color: 0xffffff
-    hilited_candidate_back_color: 0x0091ff
+    hilited_candidate_back_color: 0x008cff
     hilited_candidate_shadow_color: 0x00000000
     comment_text_color: 0x000000
     hilited_comment_text_color: 0xffffff
