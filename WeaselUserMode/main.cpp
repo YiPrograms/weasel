@@ -25,6 +25,7 @@ HHOOK g_keyboard_hook = nullptr;
 TrayStatus g_tray;
 HANDLE g_single_instance = nullptr;
 std::atomic<bool> g_ascii_mode{false};
+std::atomic<bool> g_composing{false};
 // Construct lazily so the user-mode IPC namespace is set before GetPipeName().
 weasel::Client& UserModeClient() {
   static weasel::Client client;
@@ -134,8 +135,10 @@ bool DrainResponse(std::wstring* commit = nullptr) {
   weasel::Status status;
   weasel::ResponseParser parser(commit, nullptr, &status);
   const bool result = UserModeClient().GetResponseData(std::ref(parser));
-  if (result)
+  if (result) {
     g_ascii_mode = status.ascii_mode;
+    g_composing = status.composing;
+  }
   return result;
 }
 
@@ -329,9 +332,21 @@ RECT GetInputPosition() {
     }
   }
 
-  POINT cursor = {};
-  GetCursorPos(&cursor);
-  result = {cursor.x, cursor.y, cursor.x + 2, cursor.y + 20};
+  // Never position candidates at the mouse pointer when caret information
+  // is unavailable. Prefer the focused input widget's top-left text area.
+  const HWND focus = info.hwndFocus ? info.hwndFocus : foreground;
+  RECT bounds = {};
+  if (focus && GetClientRect(focus, &bounds)) {
+    POINT anchor = {bounds.left + 6, bounds.top + 6};
+    if (ClientToScreen(focus, &anchor)) {
+      result = {anchor.x, anchor.y, anchor.x + 2, anchor.y + 20};
+      return result;
+    }
+  }
+  if (foreground && GetWindowRect(foreground, &bounds)) {
+    result = {bounds.left + 12, bounds.top + 36, bounds.left + 14,
+              bounds.top + 56};
+  }
   return result;
 }
 
@@ -556,11 +571,56 @@ bool ShouldBypassSystemShortcut(const KBDLLHOOKSTRUCT& hook) {
       return true;
   }
 
-  // Never steal Windows/app shortcuts. This intentionally means Rime's
-  // Ctrl/Alt shortcuts are unavailable in user-mode for now; coexistence with
-  // the host desktop takes priority.
-  return IsPressed(VK_LWIN) || IsPressed(VK_RWIN) || IsPressed(VK_CONTROL) ||
-         IsPressed(VK_MENU);
+  // Windows/Alt shortcuts are reserved. Allow Rime's Ctrl+grave menu and
+  // Onion's Ctrl+punctuation, Ctrl+number, Ctrl+Enter and Ctrl+arrows, while
+  // preserving application shortcuts such as Ctrl+C, Ctrl+V and Ctrl+S.
+  if (IsPressed(VK_LWIN) || IsPressed(VK_RWIN))
+    return true;
+  if (IsPressed(VK_MENU))
+    return !(g_composing.load() && hook.vkCode == 'V');
+  if (!IsPressed(VK_CONTROL))
+    return false;
+  if (g_composing.load()) {
+    switch (hook.vkCode) {
+      // Onion's Emacs-style editing and candidate paging bindings only
+      // override application shortcuts while Rime is already composing.
+      case 'P':
+      case 'N':
+      case 'B':
+      case 'F':
+      case 'A':
+      case 'E':
+      case 'D':
+      case 'K':
+      case 'H':
+      case 'G':
+      case 'V':
+        return false;
+    }
+  }
+  switch (hook.vkCode) {
+    case VK_OEM_3:
+    case VK_OEM_COMMA:
+    case VK_OEM_PERIOD:
+    case VK_OEM_2:
+    case VK_OEM_1:
+    case VK_OEM_7:
+    case VK_OEM_4:
+    case VK_OEM_6:
+    case VK_OEM_MINUS:
+    case VK_OEM_PLUS:
+    case VK_RETURN:
+    case VK_BACK:
+    case VK_LEFT:
+    case VK_RIGHT:
+    case VK_UP:
+    case VK_DOWN:
+      return false;
+  }
+  if ((hook.vkCode >= '0' && hook.vkCode <= '9') ||
+      (hook.vkCode >= VK_NUMPAD0 && hook.vkCode <= VK_NUMPAD9))
+    return false;
+  return true;
 }
 
 void ReplayPhysicalKey(const QueuedKey& key) {
@@ -647,6 +707,8 @@ void WorkerLoop() {
             key.destination != GetForegroundWindow() || g_fail_open.load())
           continue;
 
+        // The first candidate must use the current caret, before key IPC.
+        UserModeClient().UpdateInputPosition(GetInputPosition());
         g_inflight_ms = GetTickCount64();
         bool handled = false;
         std::wstring commit;
