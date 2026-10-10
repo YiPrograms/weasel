@@ -10,6 +10,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -299,41 +300,72 @@ bool ConnectServer() {
   return false;
 }
 
+// Optional stage breadcrumbs make GUI-subsystem crashes diagnosable in CI.
+void SmokeTrace(const char* stage) {
+  wchar_t path[MAX_PATH] = {};
+  const DWORD length = GetTempPathW(ARRAYSIZE(path), path);
+  if (!length || length >= ARRAYSIZE(path)) return;
+  std::wstring full(path);
+  full += L"weasel-user-mode-smoke.log";
+  HANDLE file = CreateFileW(full.c_str(), FILE_APPEND_DATA,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return;
+  DWORD written = 0;
+  WriteFile(file, stage, static_cast<DWORD>(strlen(stage)), &written, nullptr);
+  WriteFile(file, "\r\n", 2, &written, nullptr);
+  CloseHandle(file);
+}
+
 // Verifies the *real* packaged WeaselServer/Rime IPC path without a TSF IME.
 // This is not a desktop keyboard-hook/Notepad end-to-end test.
 int RunIpcSmokeTest() {
+  SmokeTrace("starting");
   if (!ConnectServer())
     return 10;
 
+  SmokeTrace("connected");
   std::wstring committed;
   bool any_key_handled = false;
   for (const wchar_t ch : std::wstring(L"nihao")) {
     const weasel::KeyEvent key(static_cast<UINT>(ch), 0);
+    SmokeTrace("before-typing");
     any_key_handled |= UserModeClient().ProcessKeyEvent(key);
+    SmokeTrace("after-process-key");
     std::wstring segment;
     DrainResponse(&segment);
+    SmokeTrace("after-key-response");
     committed += segment;
   }
 
   const weasel::KeyEvent space(ibus::space, 0);
+  SmokeTrace("before-space");
   any_key_handled |= UserModeClient().ProcessKeyEvent(space);
   std::wstring segment;
   DrainResponse(&segment);
+  SmokeTrace("after-space");
   committed += segment;
 
   // Ensure mode switching works without any scheme-specific Ctrl+Space binding.
+  SmokeTrace("before-enable-ascii");
   UserModeClient().TrayCommand(ID_WEASELTRAY_ENABLE_ASCII);
+  SmokeTrace("after-enable-ascii");
   UserModeClient().ProcessKeyEvent(weasel::KeyEvent(ibus::Control_L, 0));
   DrainResponse();
+  SmokeTrace("after-ascii-on-response");
   const bool ascii_on = g_ascii_mode.load();
+  SmokeTrace("before-disable-ascii");
   UserModeClient().TrayCommand(ID_WEASELTRAY_DISABLE_ASCII);
   UserModeClient().ProcessKeyEvent(weasel::KeyEvent(ibus::Control_L, 0));
   DrainResponse();
+  SmokeTrace("after-ascii-off-response");
   const bool ascii_off = !g_ascii_mode.load();
 
+  SmokeTrace("before-shutdown");
   UserModeClient().EndSession();
   UserModeClient().ShutdownServer();
   UserModeClient().Disconnect();
+  SmokeTrace("after-shutdown");
 
   bool contains_chinese = false;
   for (const wchar_t ch : committed) {
