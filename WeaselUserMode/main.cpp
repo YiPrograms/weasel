@@ -548,8 +548,17 @@ bool ConvertLowLevelKey(const KBDLLHOOKSTRUCT& hook,
       foreground ? GetWindowThreadProcessId(foreground, nullptr) : 0;
   const HKL foreground_layout =
       foreground_thread ? GetKeyboardLayout(foreground_thread) : nullptr;
-  return ConvertKeyEvent(hook.vkCode, info, state.data(), result,
-                         foreground_layout);
+  const bool translated = ConvertKeyEvent(hook.vkCode, info, state.data(),
+                                          result, foreground_layout);
+  // Ctrl+grave is Rime's scheme switcher, including the Shift variant.
+  // ToUnicodeEx may return a nonprintable control character (or fail) for
+  // this OEM key when Ctrl is physically down. Preserve its Ctrl/Shift mask
+  // but explicitly send Rime the X11 grave keysym.
+  if ((state[VK_CONTROL] & 0x80) && hook.vkCode == VK_OEM_3) {
+    result.keycode = ibus::grave;
+    return true;
+  }
+  return translated;
 }
 
 bool IsPressed(int vk) {
