@@ -708,8 +708,9 @@ bool ShouldBypassSystemShortcut(const KBDLLHOOKSTRUCT& hook) {
       return true;
   }
 
-  // Windows/Alt shortcuts are reserved. Allow Rime's Ctrl+grave menu and
-  // Onion's Ctrl+punctuation, Ctrl+number, Ctrl+Enter and Ctrl+arrows, while
+  // Windows/Alt shortcuts are reserved. Allow Rime's Ctrl+grave menu,
+  // Ctrl+Space language toggle (when bound by a scheme), and Onion's
+  // Ctrl+punctuation, Ctrl+number, Ctrl+Enter and Ctrl+arrows, while
   // preserving application shortcuts such as Ctrl+C, Ctrl+V and Ctrl+S.
   if (IsPressed(VK_LWIN) || IsPressed(VK_RWIN))
     return true;
@@ -736,6 +737,7 @@ bool ShouldBypassSystemShortcut(const KBDLLHOOKSTRUCT& hook) {
     }
   }
   switch (hook.vkCode) {
+    case VK_SPACE:  // Ctrl+Space is handled by Rime, not the Windows IME
     case VK_OEM_3:
     case VK_OEM_COMMA:
     case VK_OEM_PERIOD:
