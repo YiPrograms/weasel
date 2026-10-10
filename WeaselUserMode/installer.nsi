@@ -20,7 +20,7 @@ Function StopUserModeProcesses
   System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r0'
   System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE_PATH", w "$INSTDIR") i.r0'
   ; Stop the frontend first so it cannot reconnect and relaunch the server.
-  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process -Name WeaselUserMode -ErrorAction SilentlyContinue | Where-Object {$_.Path -and [IO.Path]::GetDirectoryName($_.Path) -eq $env:WEASEL_USER_MODE_PATH} | Stop-Process -Force"'
 
   ; Ask the user-mode server to exit cleanly before replacing runtime files.
   IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
@@ -36,7 +36,7 @@ FunctionEnd
 Function un.StopUserModeProcesses
   System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r0'
   System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE_PATH", w "$INSTDIR") i.r0'
-  nsExec::ExecToLog '"$SYSDIR\taskkill.exe" /IM WeaselUserMode.exe /F'
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process -Name WeaselUserMode -ErrorAction SilentlyContinue | Where-Object {$_.Path -and [IO.Path]::GetDirectoryName($_.Path) -eq $env:WEASEL_USER_MODE_PATH} | Stop-Process -Force"'
 
   IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
     nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
@@ -89,10 +89,20 @@ Section "Weasel User Mode" SecMain
   deploy_ok:
 
   WriteRegStr HKCU "${USERMODE_KEY}" "InstallDir" "$INSTDIR"
-  WriteRegDWORD HKCU "${USERMODE_KEY}" "StartEnabled" 1
+  ; Preserve existing current-user settings across an upgrade.
+  ClearErrors
+  ReadRegDWORD $0 HKCU "${USERMODE_KEY}" "StartEnabled"
+  IfErrors 0 +2
+    WriteRegDWORD HKCU "${USERMODE_KEY}" "StartEnabled" 1
   ; MOD_ALT | MOD_CONTROL, VK_F11. These can be changed later without admin.
-  WriteRegDWORD HKCU "${USERMODE_KEY}" "ToggleModifiers" 3
-  WriteRegDWORD HKCU "${USERMODE_KEY}" "ToggleVirtualKey" 0x7A
+  ClearErrors
+  ReadRegDWORD $0 HKCU "${USERMODE_KEY}" "ToggleModifiers"
+  IfErrors 0 +2
+    WriteRegDWORD HKCU "${USERMODE_KEY}" "ToggleModifiers" 3
+  ClearErrors
+  ReadRegDWORD $0 HKCU "${USERMODE_KEY}" "ToggleVirtualKey"
+  IfErrors 0 +2
+    WriteRegDWORD HKCU "${USERMODE_KEY}" "ToggleVirtualKey" 0x7A
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "WeaselUserMode" '"$INSTDIR\WeaselUserMode.exe"'
 
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "Weasel User Mode"
