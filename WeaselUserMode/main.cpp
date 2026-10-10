@@ -56,6 +56,7 @@ struct QueuedKey {
   DWORD flags = 0;
   bool key_up = false;
   bool language_toggle = false;
+  bool toggle_activation = false;
   HWND destination = nullptr;
   uint64_t epoch = 0;
   ULONGLONG event_time_ms = 0;
@@ -1002,7 +1003,7 @@ void WorkerLoop() {
         // Ctrl+Space is a frontend shortcut, independent of Rime schemas.
         // Only the worker touches IPC; the low-level keyboard hook never blocks.
         if (key.language_toggle) {
-          if (!key.key_up) {
+          if (key.toggle_activation) {
             UserModeClient().TrayCommand(
                 g_ascii_mode.load() ? ID_WEASELTRAY_DISABLE_ASCII
                                     : ID_WEASELTRAY_ENABLE_ASCII);
@@ -1110,6 +1111,10 @@ LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
   // Remember the key-down classification so releasing Ctrl early does not
   // leak the Space key-up into the target application.
   if (hook.vkCode == VK_SPACE) {
+    // Toggle exactly once per physical Ctrl+Space press, not once per
+    // autorepeat. Still swallow the matching release if Ctrl is let go first.
+    pending.toggle_activation = key_down && IsPressed(VK_CONTROL) &&
+                                !g_toggle_space_down;
     if (key_down && IsPressed(VK_CONTROL))
       g_toggle_space_down = true;
     pending.language_toggle = g_toggle_space_down;
