@@ -419,6 +419,10 @@ UserModeState CurrentUserModeState() {
 }
 
 void ShowUserModeState() {
+  if (g_fail_open.load()) {
+    g_tray.Notice(L"Rime 回應逾時，已停止攔截。請先停用再重新啟用。");
+    return;
+  }
   const UserModeState state = CurrentUserModeState();
   const wchar_t* message = nullptr;
   switch (state) {
@@ -432,9 +436,8 @@ void ShowUserModeState() {
       break;
     case UserModeState::kArmed:
       message =
-          L"Weasel User Mode: ARMED\n\nIt is enabled, but the current "
-          L"foreground app is using another Windows IME/layout. Switch to a "
-          L"plain keyboard layout such as English (US).";
+          L"Weasel User Mode: PAUSED\n\n目前焦點不是可接管的普通鍵盤輸入 "
+          L"（其他 IME、密碼欄位、較高權限程式或 Rime 尚未就緒）。";
       break;
   }
   g_tray.Notice(message);
@@ -445,8 +448,10 @@ void UpdateTray() {
     g_tray.Update(TrayMode::Off, L"已關閉");
   } else if (g_fail_open.load()) {
     g_tray.Update(TrayMode::Error, L"Rime 反應過慢；請關閉再啟用以重試");
+  } else if (!g_worker_ready.load()) {
+    g_tray.Update(TrayMode::Paused, L"正在連接 Rime 服務");
   } else if (!g_intercepting) {
-    g_tray.Update(TrayMode::Paused, L"暫停：目前使用其他 Windows 輸入法");
+    g_tray.Update(TrayMode::Paused, L"原生 IME／受保護欄位／無輸入焦點");
   } else if (g_ascii_mode.load()) {
     g_tray.Update(TrayMode::English, L"Rime 英文模式");
   } else {
@@ -473,6 +478,14 @@ bool RefreshForegroundSession() {
 
 void ToggleUserMode() {
   g_user_enabled = !g_user_enabled;
+  HKEY key = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, kUserModeRegistryKey, 0, nullptr, 0,
+                      KEY_SET_VALUE, nullptr, &key, nullptr) == ERROR_SUCCESS) {
+    const DWORD enabled = g_user_enabled ? 1 : 0;
+    RegSetValueExW(key, L"StartEnabled", 0, REG_DWORD,
+                   reinterpret_cast<const BYTE*>(&enabled), sizeof(enabled));
+    RegCloseKey(key);
+  }
   if (!g_user_enabled)
     StopInterception();
   else {
