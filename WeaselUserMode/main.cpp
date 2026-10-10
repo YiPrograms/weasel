@@ -522,6 +522,17 @@ bool ConvertLowLevelKey(const KBDLLHOOKSTRUCT& hook,
 
   std::array<BYTE, 256> state = {};
   GetKeyboardState(state.data());
+  // Keyboard state belongs to the hook's message-pump thread, not to the
+  // foreground application. Reconstruct physical modifiers explicitly.
+  constexpr std::array<int, 9> modifiers = {
+      VK_SHIFT,    VK_LSHIFT, VK_RSHIFT, VK_CONTROL, VK_LCONTROL,
+      VK_RCONTROL, VK_MENU,   VK_LMENU,  VK_RMENU};
+  for (const int vk : modifiers) {
+    if (GetAsyncKeyState(vk) & 0x8000)
+      state[vk] |= 0x80;
+    else
+      state[vk] &= 0x7f;
+  }
   SetKeyStateForEvent(state, hook.vkCode, key_up);
   KeyInfo info(static_cast<LPARAM>(lparam));
   const HWND foreground = GetForegroundWindow();
