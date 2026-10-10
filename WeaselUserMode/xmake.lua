@@ -5,7 +5,7 @@ target("WeaselUserMode")
   add_rules("subwin")
   add_deps("WeaselIPC")
   add_includedirs("$(projectdir)/WeaselIPC")
-  add_links("user32", "shell32", "imm32", "gdi32", "advapi32")
+  add_links("user32", "shell32", "imm32", "gdi32", "advapi32", "ole32", "oleaut32", "uiautomationcore")
   set_policy("windows.manifest.uac", "invoker")
 
   after_build(function(target)
