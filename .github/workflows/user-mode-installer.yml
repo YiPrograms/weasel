@@ -146,7 +146,20 @@ jobs:
             Stop-Process -Id $smoke.Id -Force -ErrorAction SilentlyContinue
             throw 'Rime IPC smoke process timed out'
           }
+          $tracePath = Join-Path $env:TEMP 'weasel-user-mode-smoke.log'
+          if (Test-Path $tracePath) {
+            Write-Host 'IPC smoke breadcrumbs:'
+            Get-Content $tracePath | ForEach-Object { Write-Host $_ }
+          }
           if ($smoke.ExitCode -ne 0) {
+            Write-Host 'Recent crash events:'
+            Get-WinEvent -FilterHashtable @{
+              LogName = 'Application'
+              StartTime = (Get-Date).AddMinutes(-5)
+              Id = 1000
+            } -ErrorAction SilentlyContinue |
+              Where-Object { $_.Message -match 'Weasel(UserMode|Server)' } |
+              Select-Object -First 3 | ForEach-Object { Write-Host $_.Message }
             throw "Portable Rime IPC conversion/mode-toggle failed: $($smoke.ExitCode)"
           }
           Write-Host 'Rime IPC and ASCII toggle smoke test completed'
