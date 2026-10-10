@@ -131,14 +131,25 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $env:WEASEL_USER_MODE = '1'
-          $deploy = Start-Process -FilePath (Resolve-Path '.\output\WeaselDeployer.exe') -ArgumentList '/deploy' -PassThru -Wait
+          Write-Host 'Starting Rime deployment'
+          $deploy = Start-Process -FilePath (Resolve-Path '.\output\WeaselDeployer.exe') -ArgumentList '/deploy' -PassThru
+          if (-not $deploy.WaitForExit(90000)) {
+            Stop-Process -Id $deploy.Id -Force -ErrorAction SilentlyContinue
+            throw 'Rime deployment process timed out'
+          }
           if ($deploy.ExitCode -ne 0) {
             throw "Rime deployment failed: $($deploy.ExitCode)"
           }
-          $smoke = Start-Process -FilePath (Resolve-Path '.\output\WeaselUserMode.exe') -ArgumentList '--ipc-smoke' -PassThru -Wait
-          if ($smoke.ExitCode -ne 0) {
-            throw "Portable Rime IPC conversion failed: $($smoke.ExitCode)"
+          Write-Host 'Starting Rime IPC and ASCII toggle smoke test'
+          $smoke = Start-Process -FilePath (Resolve-Path '.\output\WeaselUserMode.exe') -ArgumentList '--ipc-smoke' -PassThru
+          if (-not $smoke.WaitForExit(60000)) {
+            Stop-Process -Id $smoke.Id -Force -ErrorAction SilentlyContinue
+            throw 'Rime IPC smoke process timed out'
           }
+          if ($smoke.ExitCode -ne 0) {
+            throw "Portable Rime IPC conversion/mode-toggle failed: $($smoke.ExitCode)"
+          }
+          Write-Host 'Rime IPC and ASCII toggle smoke test completed'
 
       - name: Verify ordinary keyboard layout detection
         shell: pwsh
