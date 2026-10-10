@@ -409,6 +409,10 @@ bool ForegroundUsesPlainKeyboardLayout() {
   if (GetGUIThreadInfo(thread_id, &info) && info.hwndFocus) {
     wchar_t class_name[64] = {};
     GetClassNameW(info.hwndFocus, class_name, _countof(class_name));
+    // A focused Win32 button is not a text editor (for example, Notepad's
+    // Save / Don't Save confirmation). Never steal its accelerator keys.
+    if (_wcsicmp(class_name, L"Button") == 0)
+      return false;
     if ((_wcsicmp(class_name, L"Edit") == 0 ||
          _wcsnicmp(class_name, L"RichEdit", 8) == 0) &&
         (GetWindowLongPtrW(info.hwndFocus, GWL_STYLE) & ES_PASSWORD))
