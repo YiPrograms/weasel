@@ -72,7 +72,15 @@ Section "Weasel User Mode" SecMain
   SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
-  ; Native Weasel also deploys schemas before starting its service.
+  ; Weasel's portable frontend and its deployer must share a Rime data
+  ; namespace. Otherwise upgrades deploy to %APPDATA%\Rime, leaving
+  ; %APPDATA%\WeaselUserMode\build\weasel.yaml stale.
+  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r1'
+  StrCmp $1 "0" deploy_env_error deploy_env_ok
+  deploy_env_error:
+    MessageBox MB_OK|MB_ICONSTOP "Unable to configure the user-mode Rime deployment environment."
+    Abort
+  deploy_env_ok:
   ExecWait '"$INSTDIR\WeaselDeployer.exe" /deploy' $0
   IntCmp $0 0 deploy_ok deploy_error deploy_error
   deploy_error:
