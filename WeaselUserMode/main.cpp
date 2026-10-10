@@ -3,18 +3,27 @@
 #include <msctf.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 
 #include <KeyEvent.h>
 #include <ResponseParser.h>
 #include <WeaselIPC.h>
+#include "TrayStatus.h"
 
 namespace {
 
 HHOOK g_keyboard_hook = nullptr;
+TrayStatus g_tray;
+HANDLE g_single_instance = nullptr;
+std::atomic<bool> g_ascii_mode{false};
 // Construct lazily so the user-mode IPC namespace is set before GetPipeName().
 weasel::Client& UserModeClient() {
   static weasel::Client client;
@@ -25,6 +34,31 @@ bool g_user_enabled = true;
 bool g_intercepting = false;
 HWND g_foreground_window = nullptr;
 std::array<bool, 256> g_swallowed_keys{};
+
+struct QueuedKey {
+  weasel::KeyEvent event;
+  DWORD virtual_key = 0;
+  DWORD scan_code = 0;
+  DWORD flags = 0;
+  bool key_up = false;
+  HWND destination = nullptr;
+  uint64_t epoch = 0;
+  ULONGLONG event_time_ms = 0;
+};
+
+constexpr size_t kMaxQueuedKeys = 128;
+std::mutex g_queue_mutex;
+std::condition_variable g_queue_cv;
+std::deque<QueuedKey> g_queue;
+std::thread g_worker;
+std::atomic<bool> g_stop_worker{false};
+std::atomic<bool> g_worker_ready{false};
+std::atomic<bool> g_fail_open{false};
+std::atomic<HWND> g_requested_window{nullptr};
+std::atomic<HWND> g_worker_window{nullptr};
+std::atomic<uint64_t> g_epoch{0};
+std::atomic<ULONGLONG> g_oldest_queued_ms{0};
+std::atomic<ULONGLONG> g_inflight_ms{0};
 
 constexpr int kToggleHotkeyId = 1;
 constexpr int kExitHotkeyId = 2;
@@ -93,8 +127,12 @@ bool LaunchDeployer(const wchar_t* arguments) {
 }
 
 bool DrainResponse(std::wstring* commit = nullptr) {
-  weasel::ResponseParser parser(commit);
-  return UserModeClient().GetResponseData(std::ref(parser));
+  weasel::Status status;
+  weasel::ResponseParser parser(commit, nullptr, &status);
+  const bool result = UserModeClient().GetResponseData(std::ref(parser));
+  if (result)
+    g_ascii_mode = status.ascii_mode;
+  return result;
 }
 
 DWORD ReadUserModeDword(const wchar_t* name, DWORD fallback) {
@@ -315,11 +353,9 @@ bool ForegroundUsesPlainKeyboardLayout() {
 }
 
 void StopInterception() {
-  if (!g_intercepting)
-    return;
-  UserModeClient().ClearComposition();
-  DrainResponse();
-  UserModeClient().FocusOut();
+  g_requested_window.store(nullptr);
+  ++g_epoch;
+  g_queue_cv.notify_one();
   g_intercepting = false;
   g_swallowed_keys.fill(false);
 }
@@ -355,31 +391,49 @@ void ShowUserModeState() {
           L"plain keyboard layout such as English (US).";
       break;
   }
-  MessageBoxW(nullptr, message, L"Weasel User Mode",
-              MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+  g_tray.Notice(message);
+}
+
+void UpdateTray() {
+  if (!g_user_enabled) {
+    g_tray.Update(TrayMode::Off, L"已關閉");
+  } else if (g_fail_open.load()) {
+    g_tray.Update(TrayMode::Error, L"Rime 反應過慢；請關閉再啟用以重試");
+  } else if (!g_intercepting) {
+    g_tray.Update(TrayMode::Paused, L"暫停：目前使用其他 Windows 輸入法");
+  } else if (g_ascii_mode.load()) {
+    g_tray.Update(TrayMode::English, L"Rime 英文模式");
+  } else {
+    g_tray.Update(TrayMode::Chinese, L"Rime 中文模式");
+  }
 }
 
 bool RefreshForegroundSession() {
   const HWND foreground = GetForegroundWindow();
-  if (foreground != g_foreground_window) {
-    StopInterception();
-    g_foreground_window = foreground;
+  const bool allowed =
+      g_user_enabled && foreground && ForegroundUsesPlainKeyboardLayout();
+  const HWND requested = allowed ? foreground : nullptr;
+  g_foreground_window = requested;
+  if (g_requested_window.exchange(requested) != requested) {
+    ++g_epoch;
+    g_swallowed_keys.fill(false);
+    g_queue_cv.notify_one();
   }
+  g_intercepting = requested && g_worker_ready.load() &&
+                   g_worker_window.load() == requested && !g_fail_open.load();
+  UpdateTray();
+  return g_intercepting;
+}
 
-  const bool should_intercept = g_user_enabled && g_foreground_window &&
-                                ForegroundUsesPlainKeyboardLayout();
-  if (!should_intercept) {
+void ToggleUserMode() {
+  g_user_enabled = !g_user_enabled;
+  if (!g_user_enabled)
     StopInterception();
-    return false;
+  else {
+    g_fail_open = false;
+    RefreshForegroundSession();
   }
-
-  if (!g_intercepting) {
-    UserModeClient().FocusIn();
-    g_intercepting = true;
-  }
-  if (g_foreground_window)
-    UserModeClient().UpdateInputPosition(GetInputPosition());
-  return true;
+  UpdateTray();
 }
 
 void SetKeyStateForEvent(std::array<BYTE, 256>& state, DWORD vk, bool key_up) {
@@ -446,6 +500,143 @@ bool ShouldBypassSystemShortcut(const KBDLLHOOKSTRUCT& hook) {
          IsPressed(VK_MENU);
 }
 
+void ReplayPhysicalKey(const QueuedKey& key) {
+  INPUT input = {};
+  input.type = INPUT_KEYBOARD;
+  if (key.scan_code) {
+    input.ki.wScan = static_cast<WORD>(key.scan_code);
+    input.ki.dwFlags = KEYEVENTF_SCANCODE;
+    if (key.flags & LLKHF_EXTENDED)
+      input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+  } else {
+    input.ki.wVk = static_cast<WORD>(key.virtual_key);
+  }
+  if (key.key_up)
+    input.ki.dwFlags |= KEYEVENTF_KEYUP;
+  if (SendInput(1, &input, sizeof(input)) != 1)
+    g_fail_open = true;
+}
+
+// All Rime IPC occurs on this worker, never from the low-level hook or the
+// window message thread. Responses are delivered in the same order as keys.
+void WorkerLoop() {
+  HWND focused = nullptr;
+  bool connected = false;
+  std::array<bool, 256> replayed_down{};
+  uint64_t processed_epoch = g_epoch.load();
+  try {
+    while (!g_stop_worker.load()) {
+      if (!connected) {
+        g_worker_ready = false;
+        try {
+          connected = ConnectServer();
+        } catch (...) {
+          connected = false;
+        }
+        if (!connected) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(250));
+          continue;
+        }
+      }
+
+      const HWND requested = g_requested_window.load();
+      if (focused != requested) {
+        g_worker_window = nullptr;
+        if (focused) {
+          UserModeClient().ClearComposition();
+          DrainResponse();
+          UserModeClient().FocusOut();
+        }
+        focused = requested;
+        replayed_down.fill(false);
+        if (focused)
+          UserModeClient().FocusIn();
+        g_worker_window = focused;
+      }
+      g_worker_ready = true;
+
+      QueuedKey key;
+      bool has_key = false;
+      {
+        std::unique_lock<std::mutex> guard(g_queue_mutex);
+        g_queue_cv.wait_for(guard, std::chrono::milliseconds(125), [&] {
+          return g_stop_worker.load() || !g_queue.empty() ||
+                 g_requested_window.load() != focused;
+        });
+        if (!g_queue.empty()) {
+          key = g_queue.front();
+          g_queue.pop_front();
+          has_key = true;
+        }
+        g_oldest_queued_ms =
+            g_queue.empty() ? 0 : g_queue.front().event_time_ms;
+      }
+
+      if (g_stop_worker.load())
+        break;
+      if (processed_epoch != g_epoch.load()) {
+        processed_epoch = g_epoch.load();
+        replayed_down.fill(false);
+      }
+      if (has_key) {
+        if (key.epoch != g_epoch.load() || key.destination != focused ||
+            key.destination != GetForegroundWindow() || g_fail_open.load())
+          continue;
+
+        g_inflight_ms = GetTickCount64();
+        bool handled = false;
+        std::wstring commit;
+        try {
+          handled = UserModeClient().ProcessKeyEvent(key.event);
+          DrainResponse(&commit);
+        } catch (...) {
+          connected = false;
+          g_worker_ready = false;
+          g_fail_open = true;
+        }
+        g_inflight_ms = 0;
+
+        // The user may have switched applications while the IPC was pending.
+        // Never commit to an unrelated application after a focus change.
+        if (!connected || key.epoch != g_epoch.load() ||
+            key.destination != GetForegroundWindow() || g_fail_open.load())
+          continue;
+        if (!key.key_up && !handled) {
+          ReplayPhysicalKey(key);
+          if (key.virtual_key < replayed_down.size())
+            replayed_down[key.virtual_key] = true;
+        } else if (key.key_up && key.virtual_key < replayed_down.size() &&
+                   replayed_down[key.virtual_key]) {
+          ReplayPhysicalKey(key);
+          replayed_down[key.virtual_key] = false;
+        }
+        if (!commit.empty())
+          SendUnicode(commit);
+      } else if (focused && focused == GetForegroundWindow()) {
+        // Candidate positioning is best-effort; it must never run in the hook.
+        UserModeClient().UpdateInputPosition(GetInputPosition());
+      }
+    }
+  } catch (...) {
+    // No exception may escape a std::thread entry point.
+    g_fail_open = true;
+  }
+  g_worker_ready = false;
+  g_worker_window = nullptr;
+  if (connected) {
+    try {
+      if (focused) {
+        UserModeClient().ClearComposition();
+        UserModeClient().FocusOut();
+      }
+      UserModeClient().EndSession();
+      UserModeClient().Disconnect();
+    } catch (...) {
+      // Process teardown must not throw.
+    }
+  }
+}
+
 LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
   if (code < 0)
     return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
@@ -459,43 +650,54 @@ LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
   if (!key_down && !key_up)
     return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
 
-  bool swallow_release = false;
-  if (key_up && hook.vkCode < g_swallowed_keys.size() &&
-      g_swallowed_keys[hook.vkCode]) {
-    swallow_release = true;
+  const bool paired_release = key_up && hook.vkCode < g_swallowed_keys.size() &&
+                              g_swallowed_keys[hook.vkCode];
+  if (paired_release)
     g_swallowed_keys[hook.vkCode] = false;
-  }
 
-  // If we swallowed the matching key-down, its key-up must also stay hidden
-  // even if a modifier was pressed in between.
-  if (swallow_release)
-    return 1;
-
-  if (ShouldBypassSystemShortcut(hook))
+  if (!paired_release &&
+      (ShouldBypassSystemShortcut(hook) || !key_down || !g_intercepting ||
+       !g_worker_ready.load() || g_fail_open.load() ||
+       GetForegroundWindow() != g_foreground_window))
     return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
 
-  // Never reconnect, launch a process or reposition the UI from the hook.
-  // Those operations perform blocking IPC and can make Windows silently
-  // remove a low-level hook after its one-second timeout.
-  if (!g_intercepting || !g_user_enabled ||
-      GetForegroundWindow() != g_foreground_window ||
-      !ForegroundUsesPlainKeyboardLayout())
-    return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
-
+  // This callback must never call Rime IPC, CreateProcess, SendInput, or wait
+  // for the server. It only translates and enqueues a bounded key event.
   weasel::KeyEvent key_event;
-  if (!ConvertLowLevelKey(hook, key_up, key_event))
+  if (!ConvertLowLevelKey(hook, key_up, key_event) && !paired_release)
     return CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
+  if (paired_release && !key_event.keycode)
+    key_event = weasel::KeyEvent(hook.vkCode, ibus::RELEASE_MASK);
 
-  const bool handled = UserModeClient().ProcessKeyEvent(key_event);
-  std::wstring commit;
-  DrainResponse(&commit);
-  if (!commit.empty())
-    SendUnicode(commit);
+  QueuedKey pending;
+  pending.event = key_event;
+  pending.virtual_key = hook.vkCode;
+  pending.scan_code = hook.scanCode;
+  pending.flags = hook.flags;
+  pending.key_up = key_up;
+  pending.destination = g_foreground_window;
+  pending.epoch = g_epoch.load();
+  pending.event_time_ms = GetTickCount64();
 
-  if (key_down && handled && hook.vkCode < g_swallowed_keys.size())
+  {
+    std::lock_guard<std::mutex> guard(g_queue_mutex);
+    if (g_queue.size() >= kMaxQueuedKeys) {
+      g_fail_open = true;
+      ++g_epoch;
+      g_swallowed_keys.fill(false);
+      return paired_release
+                 ? 1
+                 : CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
+    }
+    if (g_queue.empty())
+      g_oldest_queued_ms = pending.event_time_ms;
+    g_queue.push_back(pending);
+  }
+  if (key_down && hook.vkCode < g_swallowed_keys.size())
     g_swallowed_keys[hook.vkCode] = true;
+  g_queue_cv.notify_one();
 
-  return handled ? 1 : CallNextHookEx(g_keyboard_hook, code, wparam, lparam);
+  return 1;
 }
 
 }  // namespace
@@ -512,6 +714,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     return LaunchDeployer(L"") ? 0 : 6;
   if (command_line && wcscmp(command_line, L"--deploy") == 0)
     return LaunchDeployer(L"/deploy") ? 0 : 6;
+  // Local\ is scoped to the interactive logon session. Only the owner of
+  // this session can start a frontend/hook, including after startup races.
+  g_single_instance =
+      CreateMutexW(nullptr, TRUE, L"Local\\WeaselUserModeFrontendSingleton");
+  if (!g_single_instance)
+    return 7;
+  if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    HWND existing = FindWindowW(TrayStatus::kWindowClass, nullptr);
+    if (existing)
+      PostMessageW(existing, TrayStatus::kActivateMessage, 0, 0);
+    CloseHandle(g_single_instance);
+    return 0;
+  }
+
+  if (!g_tray.Create(
+          instance, ToggleUserMode, [] { LaunchDeployer(L""); },
+          [] { LaunchDeployer(L"/deploy"); }, [] { PostQuitMessage(0); })) {
+    ReleaseMutex(g_single_instance);
+    CloseHandle(g_single_instance);
+    return 8;
+  }
   const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   const bool com_initialized = SUCCEEDED(com_result);
   if (com_initialized) {
@@ -520,27 +743,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
                      reinterpret_cast<void**>(&g_profile_manager));
   }
 
-  if (!ConnectServer()) {
-    MessageBoxW(
-        nullptr,
-        L"Could not connect to WeaselServer.exe. Keep WeaselUserMode.exe "
-        L"next to the normal Weasel runtime files.",
-        L"Weasel User Mode", MB_OK | MB_ICONERROR);
-    if (g_profile_manager)
-      g_profile_manager->Release();
-    if (com_initialized)
-      CoUninitialize();
-    return 2;
-  }
-
   g_user_enabled = ReadUserModeDword(L"StartEnabled", 1) != 0;
   g_foreground_window = GetForegroundWindow();
   RefreshForegroundSession();
+  UpdateTray();
 
   const bool toggle_hotkey_registered = RegisterToggleHotkey();
   RegisterHotKey(nullptr, kExitHotkeyId, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
                  VK_F12);
-  const UINT_PTR input_mode_timer = SetTimer(nullptr, 1, 250, nullptr);
+  const UINT_PTR input_mode_timer = SetTimer(nullptr, 1, 125, nullptr);
 
   g_keyboard_hook =
       SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardHook, instance, 0);
@@ -553,23 +764,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     if (toggle_hotkey_registered)
       UnregisterHotKey(nullptr, kToggleHotkeyId);
     StopInterception();
-    UserModeClient().Disconnect();
     if (g_profile_manager)
       g_profile_manager->Release();
     if (com_initialized)
       CoUninitialize();
+    g_tray.Destroy();
+    ReleaseMutex(g_single_instance);
+    CloseHandle(g_single_instance);
     return 3;
   }
+  g_worker = std::thread(WorkerLoop);
 
   MSG message = {};
   while (GetMessageW(&message, nullptr, 0, 0) > 0) {
     if (message.message == WM_HOTKEY) {
       if (message.wParam == kToggleHotkeyId) {
-        g_user_enabled = !g_user_enabled;
-        if (!g_user_enabled)
-          StopInterception();
-        else
-          RefreshForegroundSession();
+        ToggleUserMode();
         ShowUserModeState();
       } else if (message.wParam == kExitHotkeyId) {
         PostQuitMessage(0);
@@ -577,8 +787,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
       continue;
     }
     if (message.message == WM_TIMER && message.wParam == input_mode_timer) {
-      if (ConnectServer())
-        RefreshForegroundSession();
+      const ULONGLONG now = GetTickCount64();
+      const ULONGLONG queued = g_oldest_queued_ms.load();
+      const ULONGLONG inflight = g_inflight_ms.load();
+      if ((queued && now - queued > 750) ||
+          (inflight && now - inflight > 750)) {
+        // Never let a stalled server indefinitely swallow new keystrokes.
+        g_fail_open = true;
+        ++g_epoch;
+        g_swallowed_keys.fill(false);
+      }
+      RefreshForegroundSession();
+      UpdateTray();
       continue;
     }
     TranslateMessage(&message);
@@ -593,13 +813,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
   if (toggle_hotkey_registered)
     UnregisterHotKey(nullptr, kToggleHotkeyId);
   StopInterception();
-  UserModeClient().EndSession();
-  UserModeClient().Disconnect();
+  g_stop_worker = true;
+  g_queue_cv.notify_all();
+  if (g_worker.joinable()) {
+    CancelSynchronousIo(g_worker.native_handle());
+    if (WaitForSingleObject(g_worker.native_handle(), 2000) == WAIT_TIMEOUT) {
+      // A stuck third-party IPC call must never keep this session hooked.
+      g_tray.Destroy();
+      ExitProcess(0);
+    }
+    g_worker.join();
+  }
   if (g_profile_manager) {
     g_profile_manager->Release();
     g_profile_manager = nullptr;
   }
   if (com_initialized)
     CoUninitialize();
+  g_tray.Destroy();
+  ReleaseMutex(g_single_instance);
+  CloseHandle(g_single_instance);
   return 0;
 }
