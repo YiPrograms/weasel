@@ -335,6 +335,23 @@ RECT GetInputPosition() {
   return result;
 }
 
+// ImmIsIME() can return TRUE for a regular keyboard HKL (verified on the
+// Windows 10 test VM: English US = 0x04090409). The real layout must be
+// classified using its IME DLL/profile ID, not ImmIsIME() alone.
+bool IsPlainKeyboardLayout(HKL layout) {
+  if (!layout)
+    return false;
+  const WORD device = HIWORD(reinterpret_cast<UINT_PTR>(layout));
+  // IMM and TSF IME pseudo-HKLs are commonly represented with an E0xx/F0xx
+  // device ID. Regular variants (US, Dvorak, international) are not.
+  if ((device & 0xf000) == 0xe000 || (device & 0xf000) == 0xf000)
+    return false;
+  wchar_t ime_dll[MAX_PATH] = {};
+  // A real legacy IME has an associated IME module; plain keyboard layouts
+  // have none, even on systems where ImmIsIME() claims otherwise.
+  return ImmGetIMEFileNameW(layout, ime_dll, ARRAYSIZE(ime_dll)) == 0;
+}
+
 bool ForegroundUsesPlainKeyboardLayout() {
   const HWND foreground = GetForegroundWindow();
   if (!foreground)
@@ -351,10 +368,9 @@ bool ForegroundUsesPlainKeyboardLayout() {
   if (!layout)
     return false;
 
-  // Decide from the foreground thread's actual HKL. A process-wide TSF
-  // GetActiveProfile() query can describe a different app when Windows keeps
-  // per-app input methods, which caused false suspension of User Mode.
-  if (ImmIsIME(layout))
+  // On this VM ImmIsIME(0x04090409) incorrectly reports TRUE, disabling
+  // interception even with English (US) selected.
+  if (!IsPlainKeyboardLayout(layout))
     return false;
 
   // UIPI rejects SendInput into a higher-integrity process. Do not swallow
@@ -785,6 +801,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
   }
   if (command_line && wcscmp(command_line, L"--ipc-smoke") == 0)
     return RunIpcSmokeTest();
+  if (command_line && wcscmp(command_line, L"--layout-smoke") == 0) {
+    if (!IsPlainKeyboardLayout(reinterpret_cast<HKL>(0x04090409)))
+      return 18;
+    if (IsPlainKeyboardLayout(reinterpret_cast<HKL>(0xE0010404)))
+      return 19;
+    return 0;
+  }
   if (command_line && wcscmp(command_line, L"--settings") == 0)
     return LaunchDeployer(L"") ? 0 : 6;
   if (command_line && wcscmp(command_line, L"--deploy") == 0)
