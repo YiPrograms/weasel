@@ -544,7 +544,7 @@ bool GetOverlayCaret(RECT& result) {
       !ClientToScreen(info.hwndCaret, &bottom_right))
     return false;
   result = {top_left.x, top_left.y, bottom_right.x,
-            std::max(bottom_right.y, top_left.y + 18)};
+            (std::max)(bottom_right.y, top_left.y + 18)};
   return true;
 }
 
