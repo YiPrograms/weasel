@@ -554,9 +554,21 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
     // that TSF interface, so show the server-owned popup while composing.
     if (!portable)
       m_ui->Hide();
-    m_ui->Update(weasel_context, weasel_status);
+    // The hook frontend renders inline text in its separate click-through
+    // overlay. Keep candidate entries here, without duplicated preedit text.
+    // OverlayMode=0 uses the original candidate-panel preedit instead.
+    Context popup_context = weasel_context;
     if (portable) {
-      if (!weasel_context.preedit.empty() || !weasel_context.cinfo.empty())
+      DWORD mode = 1;
+      DWORD size = sizeof(mode);
+      RegGetValueW(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel\\UserMode",
+                   L"OverlayMode", RRF_RT_REG_DWORD, nullptr, &mode, &size);
+      if (mode >= 1 && mode <= 3)
+        popup_context.preedit.clear();
+    }
+    m_ui->Update(popup_context, weasel_status);
+    if (portable) {
+      if (!popup_context.preedit.empty() || !popup_context.cinfo.empty())
         m_ui->Show();
       else
         m_ui->Hide();
