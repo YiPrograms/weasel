@@ -533,6 +533,15 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
 
   _GetStatus(weasel_status, ipc_id, weasel_context);
 
+  // The native TSF frontend owns the candidate context. A portable frontend
+  // has no TSF candidate-list sink, so obtain its composition from Rime here.
+  wchar_t user_mode[4] = {};
+  const bool portable = GetEnvironmentVariableW(L"WEASEL_USER_MODE", user_mode,
+                                                _countof(user_mode)) == 1 &&
+                        user_mode[0] == L'1';
+  if (portable && ipc_id)
+    _GetContext(weasel_context, session_id);
+
   SessionStatus& session_status = get_session_status(ipc_id);
   if (rime_api->get_option(session_id, "inline_preedit"))
     session_status.style.client_caps |= INLINE_PREEDIT_CAPABLE;
@@ -543,11 +552,6 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
     // Native TSF/IME clients manage candidate visibility through their own
     // candidate-list UI. The portable keyboard-hook frontend does not host
     // that TSF interface, so show the server-owned popup while composing.
-    wchar_t user_mode[4] = {};
-    const bool portable =
-        GetEnvironmentVariableW(L"WEASEL_USER_MODE", user_mode,
-                                _countof(user_mode)) == 1 &&
-        user_mode[0] == L'1';
     if (!portable)
       m_ui->Hide();
     m_ui->Update(weasel_context, weasel_status);
