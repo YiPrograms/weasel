@@ -32,16 +32,23 @@ int WeaselServerApp::Run() {
   m_handler->Initialize();
   m_handler->OnUpdateUI([this]() { tray_icon.RequestRefresh(); });
 
-  tray_icon.Create(m_server.GetHWnd());
-  m_server.SetTrayRefreshCallback([this]() { tray_icon.ApplyRefresh(); });
-  tray_icon.RequestRefresh();
+  // The portable frontend owns its own 中/英/停/關 tray indicator. Showing
+  // the native WeaselServer tray as well would result in two competing icons.
+  const wchar_t* user_mode = _wgetenv(L"WEASEL_USER_MODE");
+  const bool portable = user_mode && wcscmp(user_mode, L"1") == 0;
+  if (!portable) {
+    tray_icon.Create(m_server.GetHWnd());
+    m_server.SetTrayRefreshCallback([this]() { tray_icon.ApplyRefresh(); });
+    tray_icon.RequestRefresh();
+  }
 
   int ret = m_server.Run();
 
   tray_icon.DisableRefresh();
   m_handler->Finalize();
   m_ui.Destroy();
-  tray_icon.RemoveIcon();
+  if (!portable)
+    tray_icon.RemoveIcon();
   win_sparkle_cleanup();
 
   return ret;
