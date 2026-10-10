@@ -18,13 +18,13 @@ global_ascii: false
 style:
   antialias_mode: default
   ascii_tip_follow_cursor: false
-  color_scheme: aqua
-  font_face: Microsoft YaHei
-  label_font_face: Microsoft YaHei
-  comment_font_face: Microsoft YaHei
-  font_point: 14
-  label_font_point: 14
-  comment_font_point: 14
+  color_scheme: screenshot_orange
+  font_face: Noto Sans TC
+  label_font_face: Cascadia Mono
+  comment_font_face: Noto Sans TC
+  font_point: 26
+  label_font_point: 26
+  comment_font_point: 26
   candidate_abbreviate_length: 0
   click_to_capture: false
   horizontal: false
@@ -32,7 +32,7 @@ style:
   inline_preedit: false
   preedit_type: composition
   display_tray_icon: false
-  label_format: "%s."
+  label_format: "%s"
   mark_text: ""
   hover_type: none # semi_light, hilite
   paging_on_scroll: false
@@ -43,18 +43,18 @@ style:
   layout:
     align_type: center
     max_width: 0	#set 0 to disable max width
-    min_width: 160
+    min_width: 180
     min_height: 0
     max_height: 0	#set 0 to disable max height
-    border_width: 3
-    margin_x: 12
-    margin_y: 12
-    spacing: 10
-    candidate_spacing: 5
-    hilite_spacing: 4
-    hilite_padding: 2
-    round_corner: 4   #别名 hilited_corner_radius
-    corner_radius: 4
+    border_width: 2
+    margin_x: 8
+    margin_y: 5
+    spacing: 7
+    candidate_spacing: 15
+    hilite_spacing: 12
+    hilite_padding: 7
+    round_corner: 0   #别名 hilited_corner_radius
+    corner_radius: 0
     shadow_radius: 0
     shadow_offset_x: 4
     shadow_offset_y: 4
@@ -62,6 +62,26 @@ style:
     baseline: 0 # percentage of font point, 0 to disable
 
 preset_color_schemes:
+  screenshot_orange:
+    name: "Screenshot orange / white"
+    author: "Weasel User Mode"
+    text_color: 0x000000
+    back_color: 0xffffff
+    shadow_color: 0x00000000
+    border_color: 0x0091ff
+    hilited_text_color: 0x000000
+    hilited_back_color: 0xffffff
+    label_color: 0x000000
+    hilited_label_color: 0xffffff
+    candidate_text_color: 0x000000
+    candidate_back_color: 0xffffff
+    candidate_shadow_color: 0x00000000
+    hilited_candidate_text_color: 0xffffff
+    hilited_candidate_back_color: 0x0091ff
+    hilited_candidate_shadow_color: 0x00000000
+    comment_text_color: 0x000000
+    hilited_comment_text_color: 0xffffff
+
   aqua:
     name: 碧水／Aqua
     author: 佛振 <chen.sst@gmail.com>
