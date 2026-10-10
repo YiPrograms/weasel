@@ -16,34 +16,26 @@ ShowUninstDetails show
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\WeaselUserMode"
 !define USERMODE_KEY "Software\Rime\Weasel\UserMode"
 
+!macro StopPortableProcesses
+  ; Extract the process stopper into NSIS's private temp directory. It runs
+  ; without admin rights and only touches binaries in this install directory.
+  InitPluginsDir
+  SetOutPath "$PLUGINSDIR"
+  File /oname=stop-user-mode.ps1 "stop-user-mode.ps1"
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\stop-user-mode.ps1" "$INSTDIR"'
+  Pop $0
+  StrCmp $0 "0" stop_finished
+    MessageBox MB_OK|MB_ICONSTOP "Weasel User Mode could not stop its existing processes (code $0). Check $TEMP\weasel-upgrade-process-stop.txt and try again."
+    Abort
+  stop_finished:
+!macroend
+
 Function StopUserModeProcesses
-  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r0'
-  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE_PATH", w "$INSTDIR") i.r0'
-  ; Stop the frontend first so it cannot reconnect and relaunch the server.
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process -Name WeaselUserMode -ErrorAction SilentlyContinue | Where-Object {$_.Path -and [IO.Path]::GetDirectoryName($_.Path) -eq $env:WEASEL_USER_MODE_PATH} | Stop-Process -Force"'
-
-  ; Ask the user-mode server to exit cleanly before replacing runtime files.
-  IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
-    nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
-
-  ; Fallback for a hung server/deployer. These are current-user processes in
-  ; the no-admin installation, so no elevation is required.
-  ; Kill only processes whose executable is in our own install directory.
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process -Name WeaselServer,WeaselDeployer -ErrorAction SilentlyContinue | Where-Object {$_.Path -and [IO.Path]::GetDirectoryName($_.Path) -eq $env:WEASEL_USER_MODE_PATH} | Stop-Process -Force"'
-  Sleep 500
+  !insertmacro StopPortableProcesses
 FunctionEnd
 
 Function un.StopUserModeProcesses
-  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE", w "1") i.r0'
-  System::Call 'kernel32::SetEnvironmentVariableW(w "WEASEL_USER_MODE_PATH", w "$INSTDIR") i.r0'
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process -Name WeaselUserMode -ErrorAction SilentlyContinue | Where-Object {$_.Path -and [IO.Path]::GetDirectoryName($_.Path) -eq $env:WEASEL_USER_MODE_PATH} | Stop-Process -Force"'
-
-  IfFileExists "$INSTDIR\WeaselServer.exe" 0 +2
-    nsExec::ExecToLog '"$INSTDIR\WeaselServer.exe" /quit'
-
-  ; Kill only processes whose executable is in our own install directory.
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -Command "Get-Process -Name WeaselServer,WeaselDeployer -ErrorAction SilentlyContinue | Where-Object {$_.Path -and [IO.Path]::GetDirectoryName($_.Path) -eq $env:WEASEL_USER_MODE_PATH} | Stop-Process -Force"'
-  Sleep 500
+  !insertmacro StopPortableProcesses
 FunctionEnd
 
 Section "Weasel User Mode" SecMain
