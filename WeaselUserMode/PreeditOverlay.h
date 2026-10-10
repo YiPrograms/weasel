@@ -48,7 +48,7 @@ class PreeditOverlay {
       return;
     }
     bool dark = dark_background_;
-    if (mode == PreeditMode::Auto) {
+    if (mode == PreeditMode::Auto || mode == PreeditMode::Transparent) {
       // Sample just OUTSIDE the popup so it never samples its own pixels.
       // Hysteresis avoids flickering when the caret moves over antialiased text.
       HDC screen = GetDC(nullptr);
@@ -64,8 +64,6 @@ class PreeditOverlay {
           if (brightness > 165) dark = false;
         }
       }
-    } else if (mode == PreeditMode::Transparent) {
-      // Retain the previous contrast decision for transparent mode.
     } else {
       dark = false;  // Solid mode always uses a readable white card.
     }
