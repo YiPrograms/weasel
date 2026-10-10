@@ -6,6 +6,7 @@ on:
       - user-mode-input
     paths:
       - 'WeaselUserMode/**'
+      - 'output/data/weasel.yaml'
       - 'WeaselDeployer/**'
       - 'WeaselServer/**'
       - 'WeaselIPC/**'
@@ -114,6 +115,12 @@ jobs:
           }
           if (-not (Get-ChildItem 'output\data\opencc\*.json' -ErrorAction SilentlyContinue)) {
             throw 'Missing OpenCC data'
+          }
+          $weaselTheme = Get-Content 'output\data\weasel.yaml' -Raw
+          if ($weaselTheme -notmatch 'color_scheme: screenshot_orange' -or
+              $weaselTheme -notmatch 'label_font_face: Cascadia Mono' -or
+              $weaselTheme -notmatch 'screenshot_orange:') {
+            throw 'The User Mode orange/white theme was not packaged'
           }
 
       # Tests that the actual built server/Rime runtime can turn "nihao"
