@@ -12,6 +12,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <KeyEvent.h>
 #include <ResponseParser.h>
@@ -335,8 +336,11 @@ bool ForegroundUsesPlainKeyboardLayout() {
   if (!foreground)
     return false;
 
-  const DWORD thread_id = GetWindowThreadProcessId(foreground, nullptr);
+  DWORD process_id = 0;
+  const DWORD thread_id = GetWindowThreadProcessId(foreground, &process_id);
   if (!thread_id)
+    return false;
+  if (process_id == GetCurrentProcessId())
     return false;
 
   const HKL layout = GetKeyboardLayout(thread_id);
@@ -348,6 +352,48 @@ bool ForegroundUsesPlainKeyboardLayout() {
   // per-app input methods, which caused false suspension of User Mode.
   if (ImmIsIME(layout))
     return false;
+
+  // UIPI rejects SendInput into a higher-integrity process. Do not swallow
+  // keys destined for a window we cannot reliably send text back into.
+  const auto integrity_level = [](HANDLE process) -> DWORD {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(process, TOKEN_QUERY, &token))
+      return 0;
+    DWORD required = 0;
+    GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &required);
+    std::vector<BYTE> data(required);
+    DWORD level = 0;
+    if (required >= sizeof(TOKEN_MANDATORY_LABEL) &&
+        GetTokenInformation(token, TokenIntegrityLevel, data.data(), required,
+                            &required)) {
+      auto* label = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(data.data());
+      const UCHAR count = *GetSidSubAuthorityCount(label->Label.Sid);
+      if (count)
+        level = *GetSidSubAuthority(label->Label.Sid, count - 1);
+    }
+    CloseHandle(token);
+    return level;
+  };
+  static const DWORD own_level = integrity_level(GetCurrentProcess());
+  HANDLE process =
+      OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
+  if (!process)
+    return false;
+  const DWORD target_level = integrity_level(process);
+  CloseHandle(process);
+  if (!own_level || !target_level || target_level > own_level)
+    return false;
+
+  GUITHREADINFO info = {};
+  info.cbSize = sizeof(info);
+  if (GetGUIThreadInfo(thread_id, &info) && info.hwndFocus) {
+    wchar_t class_name[64] = {};
+    GetClassNameW(info.hwndFocus, class_name, _countof(class_name));
+    if ((_wcsicmp(class_name, L"Edit") == 0 ||
+         _wcsnicmp(class_name, L"RichEdit", 8) == 0) &&
+        (GetWindowLongPtrW(info.hwndFocus, GWL_STYLE) & ES_PASSWORD))
+      return false;
+  }
 
   return true;
 }
@@ -714,6 +760,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
     return LaunchDeployer(L"") ? 0 : 6;
   if (command_line && wcscmp(command_line, L"--deploy") == 0)
     return LaunchDeployer(L"/deploy") ? 0 : 6;
+  const bool test_singleton =
+      command_line && wcscmp(command_line, L"--singleton-hold") == 0;
   // Local\ is scoped to the interactive logon session. Only the owner of
   // this session can start a frontend/hook, including after startup races.
   g_single_instance =
@@ -721,9 +769,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
   if (!g_single_instance)
     return 7;
   if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    if (test_singleton) {
+      CloseHandle(g_single_instance);
+      return 17;
+    }
     HWND existing = FindWindowW(TrayStatus::kWindowClass, nullptr);
     if (existing)
       PostMessageW(existing, TrayStatus::kActivateMessage, 0, 0);
+    CloseHandle(g_single_instance);
+    return 0;
+  }
+  if (test_singleton) {
+    Sleep(3500);
+    ReleaseMutex(g_single_instance);
     CloseHandle(g_single_instance);
     return 0;
   }
