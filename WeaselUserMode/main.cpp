@@ -556,8 +556,14 @@ void RefreshOverlay() {
   }
   RECT caret = {};
   if (!GetOverlayCaret(caret)) {
-    g_overlay.Hide();
-    return;
+    // Some editors do not expose an exact caret to UIA/Win32. Place the
+    // visual composition beside the same approximate anchor as candidates,
+    // rather than making the in-progress preedit completely invisible.
+    caret = GetInputPosition();
+    if (caret.bottom <= caret.top) {
+      g_overlay.Hide();
+      return;
+    }
   }
   std::wstring preedit;
   {
