@@ -600,11 +600,33 @@ bool BrowserValueEndCaret(IUIAutomationElement* focused,
 
   font_height_px = font_height_px > 0 ? font_height_px : 16;
   const int height = PreeditOverlay::NormalizeFontHeight(font_height_px);
-  // The Edge omnibox has a leading search icon. An ordinary web edit box
-  // instead has only its CSS padding.
-  const int prefix =
-      bounds.top < window.top + 110 && bounds.right - bounds.left > 280 ? 32
-                                                                        : 7;
+  // In current Edge builds the selection text range can be stuck at the
+  // start of the edit while ValuePattern changes. Its small rectangle is
+  // nevertheless a reliable text baseline (observed x=128/y=52 whereas the
+  // control bounds start at x=124/y=48). Use it instead of guessing a search
+  // icon's padding, which could shift the overlay by an entire character.
+  int text_origin_x = bounds.left + 4;
+  int line_top = bounds.top + ((bounds.bottom - bounds.top) - height) / 2;
+  Microsoft::WRL::ComPtr<IUIAutomationTextPattern> text_pattern;
+  if (SUCCEEDED(focused->GetCurrentPatternAs(UIA_TextPatternId,
+                                             IID_PPV_ARGS(&text_pattern))) &&
+      text_pattern) {
+    Microsoft::WRL::ComPtr<IUIAutomationTextRangeArray> selection;
+    if (SUCCEEDED(text_pattern->GetSelection(&selection)) && selection) {
+      int count = 0;
+      if (SUCCEEDED(selection->get_Length(&count)) && count > 0) {
+        Microsoft::WRL::ComPtr<IUIAutomationTextRange> selected;
+        RECT selection_bounds = {};
+        if (SUCCEEDED(selection->GetElement(count - 1, &selected)) &&
+            BoundsForTextRange(selected.Get(), selection_bounds) &&
+            selection_bounds.left >= bounds.left &&
+            selection_bounds.left <= bounds.left + 20) {
+          text_origin_x = selection_bounds.left;
+          line_top = selection_bounds.top;
+        }
+      }
+    }
+  }
   HDC dc = GetDC(nullptr);
   SIZE text_size = {};
   if (dc) {
@@ -623,9 +645,8 @@ bool BrowserValueEndCaret(IUIAutomationElement* focused,
   }
   SysFreeString(value);
 
-  const int x =
-      (std::min)(bounds.right - 8, bounds.left + prefix + text_size.cx);
-  const int y = bounds.top + ((bounds.bottom - bounds.top) - height) / 2;
+  const int x = (std::min)(bounds.right - 8, text_origin_x + text_size.cx);
+  const int y = line_top;
   result = {x, y, x + 2, y + height};
   return true;
 }
