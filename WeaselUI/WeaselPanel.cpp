@@ -533,6 +533,32 @@ void WeaselPanel::_HighlightText(CDCHandle& dc,
                                  const BackType& type = BackType::TEXT,
                                  const IsToRoundStruct& rd = IsToRoundStruct(),
                                  const COLORREF& bordercolor = TRANS_COLOR) {
+  // Screenshot-orange candidate panel: draw the reference's square, solid
+  // 4px frame in device pixels. A GDI+ stroked path is centered on the
+  // rectangle edge and antialiases to pale-orange pixels, leaving a visible
+  // seam where the selected row meets the border.
+  wchar_t portable_mode[4] = {};
+  if (type == BackType::BACKGROUND &&
+      GetEnvironmentVariableW(L"WEASEL_USER_MODE", portable_mode,
+                              _countof(portable_mode)) == 1 &&
+      portable_mode[0] == L'1' && (bordercolor & 0x00ffffff) == 0x008cff) {
+    const int thickness = (std::max)(1, DPI_SCALE(m_style.border));
+    HBRUSH background = CreateSolidBrush(color);
+    FillRect(dc, &rc, background);
+    DeleteObject(background);
+    HBRUSH frame = CreateSolidBrush(bordercolor);
+    RECT edge = {rc.left, rc.top, rc.right, rc.top + thickness};
+    FillRect(dc, &edge, frame);
+    edge = {rc.left, rc.bottom - thickness, rc.right, rc.bottom};
+    FillRect(dc, &edge, frame);
+    edge = {rc.left, rc.top, rc.left + thickness, rc.bottom};
+    FillRect(dc, &edge, frame);
+    edge = {rc.right - thickness, rc.top, rc.right, rc.bottom};
+    FillRect(dc, &edge, frame);
+    DeleteObject(frame);
+    return;
+  }
+
   // Graphics obj with SmoothingMode
   Gdiplus::Graphics g_back(dc);
   g_back.SetSmoothingMode(Gdiplus::SmoothingMode::SmoothingModeHighQuality);
