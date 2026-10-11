@@ -559,6 +559,14 @@ void RimeWithWeaselHandler::_UpdateUI(WeaselSessionId ipc_id) {
     // OverlayMode=0 uses the original candidate-panel preedit instead.
     Context popup_context = weasel_context;
     if (portable) {
+      // Onion Zhuyin can provide labels like "1.QY" directly in
+      // ctx.select_labels, independently of style/label_format. Preserve the
+      // selection keys, but render compact screenshot-style "1QY" labels.
+      for (auto& label : popup_context.cinfo.labels) {
+        if (label.str.size() >= 3 && label.str[0] >= L'0' &&
+            label.str[0] <= L'9' && label.str[1] == L'.')
+          label.str.erase(1, 1);
+      }
       DWORD mode = 1;
       DWORD size = sizeof(mode);
       RegGetValueW(HKEY_CURRENT_USER, L"Software\\Rime\\Weasel\\UserMode",

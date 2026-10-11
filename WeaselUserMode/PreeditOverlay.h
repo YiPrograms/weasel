@@ -91,7 +91,14 @@ class PreeditOverlay {
     const bool changed = !visible_ || text != text_ || mode != mode_ ||
                          dark != dark_background_ || left != left_ ||
                          top != top_ || width != width_ || height != height_;
-    if (!changed) return;
+    if (!changed) {
+      // Weasel's candidate panel is itself topmost. It can be recreated or
+      // raised after this overlay, covering the composition at the caret.
+      // Reassert z-order while composing; do not activate or move focus.
+      SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+      return;
+    }
 
     text_ = text;
     mode_ = mode;
