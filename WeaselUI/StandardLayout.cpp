@@ -3,22 +3,62 @@
 
 using namespace weasel;
 
+// Onion's candidate labels can contain mathematical monospace letters and
+// enclosed digit-with-period glyphs, e.g. "⒈𝚀𝚈". Those characters do not
+// belong to Consolas and trigger mixed-font fallback. Convert display-only
+// labels to plain ASCII so "1QY" is rendered as ONE run in label_font_face.
+// Selection keys remain unchanged in Rime.
+static std::wstring PortableAsciiLabel(const std::wstring& formatted) {
+  std::wstring output;
+  output.reserve(formatted.size());
+  for (size_t i = 0; i < formatted.size(); ++i) {
+    unsigned int code = formatted[i];
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < formatted.size()) {
+      const unsigned int low = formatted[i + 1];
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
+        ++i;
+      }
+    }
+    if (code >= 0x2488 && code <= 0x2490) {
+      output += static_cast<wchar_t>(L'1' + code - 0x2488);
+    } else if (code >= 0x1d670 && code <= 0x1d689) {
+      output += static_cast<wchar_t>(L'A' + code - 0x1d670);
+    } else if (code >= 0x1d68a && code <= 0x1d6a3) {
+      output += static_cast<wchar_t>(L'a' + code - 0x1d68a);
+    } else if (code >= 0x1d7f6 && code <= 0x1d7ff) {
+      output += static_cast<wchar_t>(L'0' + code - 0x1d7f6);
+    } else if (code >= 0xff10 && code <= 0xff19) {
+      output += static_cast<wchar_t>(L'0' + code - 0xff10);
+    } else if (code <= 0xffff) {
+      output += static_cast<wchar_t>(code);
+    } else {
+      // Preserve other characters instead of silently deleting the label.
+      code -= 0x10000;
+      output += static_cast<wchar_t>(0xd800 + (code >> 10));
+      output += static_cast<wchar_t>(0xdc00 + (code & 0x3ff));
+    }
+  }
+  // Also handle schemas that supply ASCII "1.QY".
+  if (output.size() >= 3 && output[0] >= L'0' && output[0] <= L'9' &&
+      output[1] == L'.')
+    output.erase(1, 1);
+  return output;
+}
+
 std::wstring StandardLayout::GetLabelText(const std::vector<Text>& labels,
                                           int id,
                                           const wchar_t* format) const {
   wchar_t buffer[128];
   swprintf_s<128>(buffer, format, labels.at(id).str.c_str());
   std::wstring rendered(buffer);
-  // Onion's select labels sometimes arrive with the number/dot embedded in
-  // the formatted string (e.g. "1.QY"), regardless of label_format. Display
-  // compact numeric labels for the screenshot theme without changing Rime's
-  // actual selection keys. Native TSF clients retain their existing labels.
+  // Only the portable UI's screenshot-inspired theme normalizes labels.
+  // Native IME users retain their original Rime label typography.
   wchar_t portable[4] = {};
   if (GetEnvironmentVariableW(L"WEASEL_USER_MODE", portable,
                               _countof(portable)) == 1 &&
-      portable[0] == L'1' && rendered.size() >= 3 && rendered[0] >= L'0' &&
-      rendered[0] <= L'9' && rendered[1] == L'.')
-    rendered.erase(1, 1);
+      portable[0] == L'1')
+    rendered = PortableAsciiLabel(rendered);
   return rendered;
 }
 
