@@ -1,7 +1,7 @@
 # Weasel settings
 # encoding: utf-8
 
-config_version: "0.30"
+config_version: "0.31"
 
 app_options:
   cmd.exe:
@@ -46,7 +46,7 @@ style:
     min_width: 148
     min_height: 0
     max_height: 0	#set 0 to disable max height
-    border_width: 1
+    border_width: 4
     margin_x: 5
     margin_y: 2
     spacing: 3

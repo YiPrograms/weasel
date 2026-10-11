@@ -797,6 +797,12 @@ bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
   ComPtr<IDWriteTextFormat1> labeltxtFormat = pDWR->pLabelTextFormat;
   ComPtr<IDWriteTextFormat1> commenttxtFormat = pDWR->pCommentTextFormat;
   BackType bkType = BackType::CAND;
+  wchar_t portable_mode[4] = {};
+  const bool orange_user_mode =
+      GetEnvironmentVariableW(L"WEASEL_USER_MODE", portable_mode,
+                              _countof(portable_mode)) == 1 &&
+      portable_mode[0] == L'1' &&
+      (m_style.border_color & 0x00ffffff) == 0x008cff;
 
   CRect rect;
   // draw back color and shadow color, with gdi+
@@ -820,7 +826,8 @@ bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
       }
     }
     // draw non highlighted candidates, without shadow
-    if ((COLORNOTTRANSPARENT(m_style.candidate_back_color) ||
+    if (!orange_user_mode &&
+        (COLORNOTTRANSPARENT(m_style.candidate_back_color) ||
          COLORNOTTRANSPARENT(m_style.candidate_border_color))) {
       for (auto i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
         if (i == m_ctx.cinfo.highlighted || i == m_hoverIndex)
@@ -866,10 +873,35 @@ bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
       }
       rect.InflateRect(DPI_SCALE(m_style.hilite_padding_x),
                        DPI_SCALE(m_style.hilite_padding_y));
-      _HighlightText(dc, rect, m_style.hilited_candidate_back_color,
-                     markSt ? m_style.hilited_candidate_shadow_color : 0,
-                     DPI_SCALE(m_style.round_corner), bkType, rd,
-                     m_style.hilited_candidate_border_color);
+      if (orange_user_mode) {
+        // The reference theme has a single continuous orange frame and
+        // an edge-to-edge selected row. Standard Weasel uses per-candidate
+        // padding, leaving thin white gutters between the selection and
+        // the border. Fill the rectangle in exact device pixels instead.
+        const CRect panel = m_layout->GetContentRect();
+        const int border = (std::max)(1, DPI_SCALE(m_style.border));
+        rect.left = panel.left + border;
+        rect.right = panel.right - border;
+        if (m_ctx.cinfo.highlighted == 0)
+          rect.top = panel.top + border;
+        if (m_ctx.cinfo.highlighted + 1 == m_candidateCount)
+          rect.bottom = panel.bottom - border;
+        rect.top = (std::max)(rect.top, panel.top + border);
+        rect.bottom = (std::min)(rect.bottom, panel.bottom - border);
+        if (rect.Width() > 0 && rect.Height() > 0) {
+          Gdiplus::Graphics graphics(dc);
+          graphics.SetSmoothingMode(Gdiplus::SmoothingModeNone);
+          Gdiplus::SolidBrush brush(
+              GDPCOLOR_FROM_COLORREF(m_style.hilited_candidate_back_color));
+          graphics.FillRectangle(&brush, rect.left, rect.top, rect.Width(),
+                                 rect.Height());
+        }
+      } else {
+        _HighlightText(dc, rect, m_style.hilited_candidate_back_color,
+                       markSt ? m_style.hilited_candidate_shadow_color : 0,
+                       DPI_SCALE(m_style.round_corner), bkType, rd,
+                       m_style.hilited_candidate_border_color);
+      }
       if (m_style.mark_text.empty() &&
           COLORNOTTRANSPARENT(m_style.hilited_mark_color)) {
         int height =

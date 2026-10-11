@@ -600,6 +600,79 @@ bool BrowserValueEndCaret(IUIAutomationElement* focused,
 
   font_height_px = font_height_px > 0 ? font_height_px : 16;
   const int height = PreeditOverlay::NormalizeFontHeight(font_height_px);
+  // Chromium's TextPattern selection rectangle can remain at the start
+  // of the input indefinitely. Unlike GDI text-width estimation, the
+  // DocumentRange's final *character* has a real on-screen rectangle:
+  // this handles proportional fonts, mixed CJK/Latin and horizontal
+  // scrolling without accumulating an error on each committed character.
+  Microsoft::WRL::ComPtr<IUIAutomationTextPattern> glyph_pattern;
+  if (text_length > 0 &&
+      SUCCEEDED(focused->GetCurrentPatternAs(UIA_TextPatternId,
+                                             IID_PPV_ARGS(&glyph_pattern))) &&
+      glyph_pattern) {
+    Microsoft::WRL::ComPtr<IUIAutomationTextRange> document;
+    if (SUCCEEDED(glyph_pattern->get_DocumentRange(&document)) && document) {
+      BSTR document_text = nullptr;
+      const bool same_text = SUCCEEDED(document->GetText(-1, &document_text)) &&
+                             document_text &&
+                             SysStringLen(document_text) == text_length &&
+                             wmemcmp(document_text, value, text_length) == 0;
+      SysFreeString(document_text);
+      if (same_text) {
+        Microsoft::WRL::ComPtr<IUIAutomationTextRange> last_character;
+        if (SUCCEEDED(document->Clone(&last_character)) && last_character) {
+          int moved = 0;
+          if (SUCCEEDED(last_character->MoveEndpointByRange(
+                  TextPatternRangeEndpoint_Start, document.Get(),
+                  TextPatternRangeEndpoint_End)) &&
+              SUCCEEDED(last_character->MoveEndpointByUnit(
+                  TextPatternRangeEndpoint_Start, TextUnit_Character, -1,
+                  &moved)) &&
+              moved == -1) {
+            SAFEARRAY* rectangles = nullptr;
+            if (SUCCEEDED(last_character->GetBoundingRectangles(&rectangles)) &&
+                rectangles) {
+              long lower = 0;
+              long upper = -1;
+              if (SafeArrayGetDim(rectangles) == 1 &&
+                  SUCCEEDED(SafeArrayGetLBound(rectangles, 1, &lower)) &&
+                  SUCCEEDED(SafeArrayGetUBound(rectangles, 1, &upper)) &&
+                  upper - lower + 1 >= 4) {
+                // GetBoundingRectangles stores x/y/width/height doubles.
+                double glyph[4] = {};
+                bool readable = true;
+                for (int i = 0; i < 4; ++i) {
+                  long index = upper - 3 + i;
+                  if (FAILED(
+                          SafeArrayGetElement(rectangles, &index, &glyph[i]))) {
+                    readable = false;
+                    break;
+                  }
+                }
+                if (readable && std::isfinite(glyph[0]) &&
+                    std::isfinite(glyph[1]) && std::isfinite(glyph[2]) &&
+                    std::isfinite(glyph[3]) && glyph[2] > 0 && glyph[3] > 0) {
+                  const int x =
+                      static_cast<int>(std::lround(glyph[0] + glyph[2]));
+                  const int y = static_cast<int>(std::lround(glyph[1]));
+                  if (x >= bounds.left && x <= bounds.right - 3 &&
+                      y >= bounds.top - 5 && y <= bounds.bottom - 5) {
+                    result = {x, y, x + 2,
+                              y + static_cast<int>(std::lround(glyph[3]))};
+                    SafeArrayDestroy(rectangles);
+                    SysFreeString(value);
+                    return true;
+                  }
+                }
+              }
+              SafeArrayDestroy(rectangles);
+            }
+          }
+        }
+      }
+    }
+  }
+
   // In current Edge builds the selection text range can be stuck at the
   // start of the edit while ValuePattern changes. Its small rectangle is
   // nevertheless a reliable text baseline (observed x=128/y=52 whereas the
@@ -627,6 +700,8 @@ bool BrowserValueEndCaret(IUIAutomationElement* focused,
       }
     }
   }
+  // Older UIA providers may not expose character bounds. Only as a last
+  // resort estimate width, and clamp it to the visible input rectangle.
   HDC dc = GetDC(nullptr);
   SIZE text_size = {};
   if (dc) {
