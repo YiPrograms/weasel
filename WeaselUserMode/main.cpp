@@ -619,6 +619,48 @@ bool BrowserValueEndCaret(IUIAutomationElement* focused,
                              wmemcmp(document_text, value, text_length) == 0;
       SysFreeString(document_text);
       if (same_text) {
+        // The omnibox may select an autocomplete suffix. That text is
+        // visible, but the insertion point is at the *start* of the
+        // selected suffix, not after its last character. Using document
+        // end in that situation creates the large blank gap reported
+        // when Edge expands a suggestion.
+        Microsoft::WRL::ComPtr<IUIAutomationTextRangeArray> selections;
+        if (SUCCEEDED(glyph_pattern->GetSelection(&selections)) && selections) {
+          int count = 0;
+          if (SUCCEEDED(selections->get_Length(&count)) && count > 0) {
+            Microsoft::WRL::ComPtr<IUIAutomationTextRange> selected;
+            if (SUCCEEDED(selections->GetElement(count - 1, &selected)) &&
+                selected) {
+              BSTR selection_text = nullptr;
+              int relative_end = -1;
+              if (SUCCEEDED(selected->GetText(-1, &selection_text)) &&
+                  selection_text) {
+                const UINT selected_length = SysStringLen(selection_text);
+                if (selected_length && selected_length < text_length &&
+                    wmemcmp(value + text_length - selected_length,
+                            selection_text, selected_length) == 0 &&
+                    SUCCEEDED(selected->CompareEndpoints(
+                        TextPatternRangeEndpoint_End, document.Get(),
+                        TextPatternRangeEndpoint_End, &relative_end)) &&
+                    relative_end == 0) {
+                  RECT selection_caret = {};
+                  if (BoundsForTextRange(selected.Get(), selection_caret) &&
+                      selection_caret.left >= bounds.left &&
+                      selection_caret.left < bounds.right &&
+                      selection_caret.top >= bounds.top - 5 &&
+                      selection_caret.top < bounds.bottom) {
+                    result = selection_caret;
+                    SysFreeString(selection_text);
+                    SysFreeString(value);
+                    return true;
+                  }
+                }
+              }
+              SysFreeString(selection_text);
+            }
+          }
+        }
+
         Microsoft::WRL::ComPtr<IUIAutomationTextRange> last_character;
         if (SUCCEEDED(document->Clone(&last_character)) && last_character) {
           int moved = 0;
