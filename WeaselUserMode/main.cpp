@@ -690,7 +690,24 @@ bool ForegroundUsesPlainKeyboardLayout() {
   if (process_id == GetCurrentProcessId())
     return false;
 
-  const HKL layout = GetKeyboardLayout(thread_id);
+  HKL layout = GetKeyboardLayout(thread_id);
+  if (!layout) {
+    // Legacy conhost/cmd consoles sometimes report HKL=0 even for the active
+    // US keyboard (observed on the Windows 10 VM). Resolve the frontend GUI
+    // thread's layout, but ONLY for a verified console window. Other unknown
+    // windows must still fail open instead of risking double IME processing.
+    wchar_t class_name[64] = {};
+    GetClassNameW(foreground, class_name, ARRAYSIZE(class_name));
+    if (_wcsicmp(class_name, L"ConsoleWindowClass") != 0)
+      return false;
+    layout = GetKeyboardLayout(GetCurrentThreadId());
+    if (!layout) {
+      const HWND shell = GetShellWindow();
+      const DWORD shell_thread = GetWindowThreadProcessId(shell, nullptr);
+      if (shell_thread)
+        layout = GetKeyboardLayout(shell_thread);
+    }
+  }
   if (!layout)
     return false;
 
