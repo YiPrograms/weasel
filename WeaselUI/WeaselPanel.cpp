@@ -878,7 +878,11 @@ bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
         // an edge-to-edge selected row. Standard Weasel uses per-candidate
         // padding, leaving thin white gutters between the selection and
         // the border. Fill the rectangle in exact device pixels instead.
-        const CRect panel = m_layout->GetContentRect();
+        // rcw is the actual drawable client area. The layout's content
+        // rectangle can be inset by shadow/DPI offsets and, on some
+        // portable arrangements, clipping the row to it produces an empty
+        // selection. Use the same bounds as the final layered window.
+        const CRect panel = rcw;
         const int border = (std::max)(1, DPI_SCALE(m_style.border));
         rect.left = panel.left + border;
         rect.right = panel.right - border;
@@ -889,12 +893,18 @@ bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
         rect.top = (std::max)(rect.top, panel.top + border);
         rect.bottom = (std::min)(rect.bottom, panel.bottom - border);
         if (rect.Width() > 0 && rect.Height() > 0) {
-          Gdiplus::Graphics graphics(dc);
-          graphics.SetSmoothingMode(Gdiplus::SmoothingModeNone);
-          Gdiplus::SolidBrush brush(
-              GDPCOLOR_FROM_COLORREF(m_style.hilited_candidate_back_color));
-          graphics.FillRectangle(&brush, rect.left, rect.top, rect.Width(),
-                                 rect.Height());
+          // Opaque GDI fill, pixel-aligned: no AA fringes or alpha
+          // compositing against the orange frame.
+          HBRUSH brush = CreateSolidBrush(m_style.hilited_candidate_back_color);
+          FillRect(dc, &rect, brush);
+          DeleteObject(brush);
+        } else {
+          // Never make the selected white label invisible if a layout
+          // unexpectedly supplies an empty rectangle.
+          _HighlightText(dc, m_layout->GetHighlightRect(),
+                         m_style.hilited_candidate_back_color, 0,
+                         DPI_SCALE(m_style.round_corner), bkType, rd,
+                         m_style.hilited_candidate_border_color);
         }
       } else {
         _HighlightText(dc, rect, m_style.hilited_candidate_back_color,
