@@ -50,21 +50,20 @@ class PreeditOverlay {
     }
     bool dark = dark_background_;
     if (mode == PreeditMode::Auto || mode == PreeditMode::Transparent) {
-      // A single pixel immediately to the left of the caret can be dark
-      // text, an I-beam, or the candidate border on an otherwise white
-      // editor. Take the median of several nearby pixels, mostly above or
-      // to the right of the preedit. This also avoids classifying our own
-      // popup as the underlying application background.
+      // Take samples ABOVE the composition rectangle, plus points to its
+      // left. Sampling inside our own semi-transparent window would make
+      // the auto palette oscillate. Candidate popup starts below the
+      // reserved preedit area and cannot contaminate these samples.
       HDC screen = GetDC(nullptr);
       if (screen) {
         const POINT sample_points[] = {
-            {caret.left + 80, caret.top - 8},
-            {caret.left + 130, caret.top - 8},
-            {caret.left + 210, caret.top - 8},
-            {caret.left + 80, caret.top + 4},
-            {caret.left + 140, caret.top + 4},
-            {caret.left + 220, caret.top + 4},
-            {caret.left - 10, caret.top - 6}};
+            {caret.left - 10, caret.top - 8},
+            {caret.left + 30, caret.top - 8},
+            {caret.left + 90, caret.top - 8},
+            {caret.left + 150, caret.top - 8},
+            {caret.left + 220, caret.top - 8},
+            {caret.left - 10, caret.top + 4},
+            {caret.left + 280, caret.top + 4}};
         int brightnesses[sizeof(sample_points) / sizeof(sample_points[0])];
         size_t valid = 0;
         for (const POINT& point : sample_points) {
@@ -110,14 +109,11 @@ class PreeditOverlay {
     const bool changed = !visible_ || text != text_ || mode != mode_ ||
                          dark != dark_background_ || left != left_ ||
                          top != top_ || width != width_ || height != height_;
-    if (!changed) {
-      // Weasel's candidate panel is itself topmost. It can be recreated or
-      // raised after this overlay, covering the composition at the caret.
-      // Reassert z-order while composing; do not activate or move focus.
-      SetWindowPos(hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
-                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-      return;
-    }
+    // Never repeatedly raise a stable topmost window. Weasel's candidate
+    // panel is also topmost; raising this every 40 ms creates a z-order race
+    // and visible flashing. The candidate anchor is instead positioned
+    // below the preedit rectangle (see GetCandidateInputPosition).
+    if (!changed) return;
 
     const bool mode_changed = mode != mode_;
     text_ = text;

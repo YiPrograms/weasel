@@ -35,11 +35,13 @@ The packaged `output/data/weasel.yaml` defaults to `screenshot_orange`:
 - Selected text white, normal text black
 - **Noto Sans TC** for Chinese/candidate/emoji fallback
 - **Consolas** for candidate selection labels, such as `1QY`, `2AH`
-- Square edges, 2px border, 28pt candidate/label fonts, adjusted margins/padding/spacing
+- Square edges, thin orange border, **18pt candidate text and 16pt
+  monospaced labels** with compact row padding (rather than a screen-filling
+  26–28pt panel). Eight candidates should fit comfortably on a 768px desktop.
 
 Install Noto Sans TC and Consolas for the intended appearance; Windows substitutes available fonts if they are missing. The monospace font affects the Rime-provided label, not candidate text. Source labels and number of candidates depend on the installed Rime schema.
 
-Users can override these defaults in `%APPDATA%\Rime\weasel.custom.yaml`. A pre-existing user customization can supersede the packaged scheme. Re-deploy Rime from the tray after changing any configuration.
+Users can override these defaults in `%APPDATA%\WeaselUserMode\weasel.custom.yaml`. A pre-existing user customization can supersede the packaged scheme. Re-deploy Rime from the tray after changing any configuration.
 
 ## Validation
 

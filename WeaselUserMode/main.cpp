@@ -608,6 +608,26 @@ RECT GetInputPosition() {
   return result;
 }
 
+// Candidates and the visual preedit are independent topmost windows. Without
+// extra room, Weasel places the popup just 6 px beneath the caret's bottom,
+// which often falls INSIDE our 20pt preedit window. Never fix that by raising
+// either window every frame: they will flicker as their z-orders alternate.
+// Reserve the overlay's text height in the IPC caret anchor instead, keeping
+// the two windows spatially separate even before the first preedit response.
+RECT GetCandidateInputPosition() {
+  RECT result = GetInputPosition();
+  if (g_overlay_mode == PreeditMode::Off ||
+      result.bottom <= result.top)
+    return result;
+  HDC screen = GetDC(nullptr);
+  const int dpi = screen ? GetDeviceCaps(screen, LOGPIXELSY) : 96;
+  if (screen) ReleaseDC(nullptr, screen);
+  // Overlay font: 20 pt, plus its vertical padding and composition underline.
+  const int reserved = MulDiv(20, dpi > 0 ? dpi : 96, 72) + 14;
+  result.bottom = (std::max)(result.bottom, result.top + reserved);
+  return result;
+}
+
 // Overlay must never follow the approximate fallback position used by the
 // candidate popup. Only use a caret actually reported by UIA or Win32.
 bool GetOverlayCaret(RECT& result) {
@@ -1067,7 +1087,7 @@ void WorkerLoop() {
         }
 
         // The first candidate must use the current caret, before key IPC.
-        UserModeClient().UpdateInputPosition(GetInputPosition());
+        UserModeClient().UpdateInputPosition(GetCandidateInputPosition());
         g_inflight_ms = GetTickCount64();
         bool handled = false;
         std::wstring commit;
@@ -1099,7 +1119,7 @@ void WorkerLoop() {
           SendUnicode(commit);
       } else if (focused && focused == GetForegroundWindow()) {
         // Candidate positioning is best-effort; it must never run in the hook.
-        UserModeClient().UpdateInputPosition(GetInputPosition());
+        UserModeClient().UpdateInputPosition(GetCandidateInputPosition());
       }
     }
   } catch (...) {
