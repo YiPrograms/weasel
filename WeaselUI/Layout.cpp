@@ -59,8 +59,7 @@ Layout::Layout(const UIStyle& style,
   const bool orange_user_mode =
       GetEnvironmentVariableW(L"WEASEL_USER_MODE", user_mode,
                               _countof(user_mode)) == 1 &&
-      user_mode[0] == L'1' &&
-      (_style.border_color & 0x00ffffff) == 0x008cff;
+      user_mode[0] == L'1' && (_style.border_color & 0x00ffffff) == 0x008cff;
   const int border_space = orange_user_mode ? _style.border : _style.border * 2;
   offsetX += border_space;
   offsetY += border_space;
