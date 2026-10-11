@@ -553,6 +553,83 @@ int FocusedControlFontHeight(HWND foreground) {
   return std::abs(static_cast<int>(logfont.lfHeight));
 }
 
+// Chrome/Edge occasionally expose an edit box but report an empty or stale
+// degenerate TextPattern caret range. Its ValuePattern still contains the
+// committed text. For single-line browser edits, estimate the insertion
+// point at the end of that value instead of falling back to the top-left
+// corner of the widget, which covers already committed text.
+bool BrowserValueEndCaret(IUIAutomationElement* focused,
+                          HWND foreground,
+                          RECT& result,
+                          int& font_height_px) {
+  if (!focused || !foreground)
+    return false;
+  wchar_t window_class[80] = {};
+  GetClassNameW(foreground, window_class, ARRAYSIZE(window_class));
+  if (_wcsicmp(window_class, L"Chrome_WidgetWin_1") != 0)
+    return false;
+
+  CONTROLTYPEID control_type = 0;
+  if (FAILED(focused->get_CurrentControlType(&control_type)) ||
+      control_type != UIA_EditControlTypeId)
+    return false;
+
+  Microsoft::WRL::ComPtr<IUIAutomationValuePattern> value_pattern;
+  if (FAILED(focused->GetCurrentPatternAs(UIA_ValuePatternId,
+                                          IID_PPV_ARGS(&value_pattern))) ||
+      !value_pattern)
+    return false;
+  BSTR value = nullptr;
+  if (FAILED(value_pattern->get_CurrentValue(&value)) || !value)
+    return false;
+  const UINT text_length = SysStringLen(value);
+  const bool multiline = wcschr(value, L'\n') || wcschr(value, L'\r');
+  RECT bounds = {};
+  const bool has_bounds =
+      SUCCEEDED(focused->get_CurrentBoundingRectangle(&bounds));
+  RECT window = {};
+  const bool within_window =
+      GetWindowRect(foreground, &window) && bounds.left >= window.left - 8 &&
+      bounds.top >= window.top - 8 && bounds.right <= window.right + 8 &&
+      bounds.bottom <= window.bottom + 8;
+  if (!has_bounds || !within_window || multiline || text_length > 4096 ||
+      bounds.right <= bounds.left + 40 || bounds.bottom <= bounds.top + 10) {
+    SysFreeString(value);
+    return false;
+  }
+
+  font_height_px = font_height_px > 0 ? font_height_px : 16;
+  const int height = PreeditOverlay::NormalizeFontHeight(font_height_px);
+  // The Edge omnibox has a leading search icon. An ordinary web edit box
+  // instead has only its CSS padding.
+  const int prefix =
+      bounds.top < window.top + 110 && bounds.right - bounds.left > 280 ? 32
+                                                                        : 7;
+  HDC dc = GetDC(nullptr);
+  SIZE text_size = {};
+  if (dc) {
+    HFONT font =
+        CreateFontW(-height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                    DEFAULT_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    if (font) {
+      HGDIOBJ old = SelectObject(dc, font);
+      GetTextExtentPoint32W(dc, value, static_cast<int>(text_length),
+                            &text_size);
+      SelectObject(dc, old);
+      DeleteObject(font);
+    }
+    ReleaseDC(nullptr, dc);
+  }
+  SysFreeString(value);
+
+  const int x =
+      (std::min)(bounds.right - 8, bounds.left + prefix + text_size.cx);
+  const int y = bounds.top + ((bounds.bottom - bounds.top) - height) / 2;
+  result = {x, y, x + 2, y + height};
+  return true;
+}
+
 bool GetAutomationCaret(IUIAutomation* automation,
                         HWND foreground,
                         RECT& rect,
@@ -565,9 +642,39 @@ bool GetAutomationCaret(IUIAutomation* automation,
   int focused_process = 0;
   DWORD foreground_process = 0;
   GetWindowThreadProcessId(foreground, &foreground_process);
-  if (FAILED(focused->get_CurrentProcessId(&focused_process)) ||
-      static_cast<DWORD>(focused_process) != foreground_process)
+  if (FAILED(focused->get_CurrentProcessId(&focused_process)))
     return false;
+  if (static_cast<DWORD>(focused_process) != foreground_process) {
+    // Chromium UIA text providers may live in a renderer subprocess. Only
+    // accept them if the element is entirely inside the foreground browser.
+    wchar_t window_class[80] = {};
+    GetClassNameW(foreground, window_class, ARRAYSIZE(window_class));
+    RECT bounds = {}, window = {};
+    if (_wcsicmp(window_class, L"Chrome_WidgetWin_1") != 0 ||
+        FAILED(focused->get_CurrentBoundingRectangle(&bounds)) ||
+        !GetWindowRect(foreground, &window) || bounds.left < window.left - 8 ||
+        bounds.top < window.top - 8 || bounds.right > window.right + 8 ||
+        bounds.bottom > window.bottom + 8)
+      return false;
+  }
+
+  RECT browser_end = {};
+  int browser_font_height = font_height_px;
+  const bool browser_estimated = BrowserValueEndCaret(
+      focused.Get(), foreground, browser_end, browser_font_height);
+  const auto accept_caret = [&](IUIAutomationTextRange* range) -> bool {
+    if (!BoundsForTextRange(range, rect))
+      return false;
+    font_height_px = TextRangeFontHeight(range, foreground);
+    // If Chromium gives the left edge of a filled text field instead of its
+    // real caret, prefer the committed-value end. Keep correct UIA positions.
+    if (browser_estimated && browser_end.left > rect.left + 8) {
+      rect = browser_end;
+      if (!font_height_px)
+        font_height_px = browser_font_height;
+    }
+    return true;
+  };
 
   Microsoft::WRL::ComPtr<IUIAutomationTextPattern2> text2;
   if (SUCCEEDED(focused->GetCurrentPatternAs(UIA_TextPattern2Id,
@@ -576,8 +683,7 @@ bool GetAutomationCaret(IUIAutomation* automation,
     BOOL active = FALSE;
     Microsoft::WRL::ComPtr<IUIAutomationTextRange> range;
     if (SUCCEEDED(text2->GetCaretRange(&active, &range)) && active &&
-        BoundsForTextRange(range.Get(), rect)) {
-      font_height_px = TextRangeFontHeight(range.Get(), foreground);
+        accept_caret(range.Get())) {
       return true;
     }
   }
@@ -592,12 +698,16 @@ bool GetAutomationCaret(IUIAutomation* automation,
       if (SUCCEEDED(selection->get_Length(&count)) && count > 0) {
         Microsoft::WRL::ComPtr<IUIAutomationTextRange> range;
         if (SUCCEEDED(selection->GetElement(count - 1, &range)) &&
-            BoundsForTextRange(range.Get(), rect)) {
-          font_height_px = TextRangeFontHeight(range.Get(), foreground);
+            accept_caret(range.Get())) {
           return true;
         }
       }
     }
+  }
+  if (browser_estimated) {
+    rect = browser_end;
+    font_height_px = browser_font_height;
+    return true;
   }
   return false;
 }
@@ -682,6 +792,8 @@ RECT GetInputPosition() {
   return result;
 }
 
+bool GetOverlayCaret(RECT& result);
+
 int GetTargetFontHeight(const RECT& caret) {
   const HWND foreground = GetForegroundWindow();
   {
@@ -706,12 +818,20 @@ int GetTargetFontHeight(const RECT& caret) {
 // Reserve the overlay's text height in the IPC caret anchor instead, keeping
 // the two windows spatially separate even before the first preedit response.
 RECT GetCandidateInputPosition() {
-  RECT result = GetInputPosition();
+  RECT result = {};
+  if (!GetOverlayCaret(result))
+    result = GetInputPosition();
   if (g_overlay_mode == PreeditMode::Off || result.bottom <= result.top)
     return result;
-  const int reserved = PreeditOverlay::CandidateClearance(
-      g_overlay_mode, GetTargetFontHeight(result));
-  result.bottom = (std::max)(result.bottom, result.top + reserved);
+  const int height = GetTargetFontHeight(result);
+  const int overlay_top =
+      PreeditOverlay::OverlayTop(result, g_overlay_mode, height);
+  const int overlay_bottom =
+      overlay_top + PreeditOverlay::OverlayHeight(g_overlay_mode, height);
+  // WeaselPanel adds 6px internally. Subtract 4px here so its candidate
+  // window begins just 2px below the rendered preedit, not 10-20px away.
+  result.top = overlay_top;
+  result.bottom = overlay_bottom - 4;
   return result;
 }
 
@@ -752,14 +872,10 @@ void RefreshOverlay() {
   }
   RECT caret = {};
   if (!GetOverlayCaret(caret)) {
-    // Some editors do not expose an exact caret to UIA/Win32. Place the
-    // visual composition beside the same approximate anchor as candidates,
-    // rather than making the in-progress preedit completely invisible.
-    caret = GetInputPosition();
-    if (caret.bottom <= caret.top) {
-      g_overlay.Hide();
-      return;
-    }
+    // A guessed top-left widget position is not a text caret. On Edge this
+    // covered the original text after each commit; never render there.
+    g_overlay.Hide();
+    return;
   }
   std::wstring preedit;
   {

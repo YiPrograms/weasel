@@ -23,7 +23,7 @@ class PreeditOverlay {
                             : 16;  // 12pt at 96 DPI if no font is available.
   }
 
-  static int CandidateClearance(PreeditMode mode, int font_height_px) {
+  static int OverlayHeight(PreeditMode mode, int font_height_px) {
     if (mode == PreeditMode::Off)
       return 0;
     HDC dc = GetDC(nullptr);
@@ -41,7 +41,14 @@ class PreeditOverlay {
       ReleaseDC(nullptr, dc);
     }
     const int pad_y = mode == PreeditMode::Transparent ? 2 : 3;
-    return (std::max)(18, metrics_height + pad_y * 2 + 2) + 10;
+    return (std::max)(18, metrics_height + pad_y * 2 + 2);
+  }
+
+  static int OverlayTop(const RECT& caret,
+                        PreeditMode mode,
+                        int font_height_px) {
+    const int caret_height = (std::max)(1L, caret.bottom - caret.top);
+    return caret.top + (caret_height - OverlayHeight(mode, font_height_px)) / 2;
   }
 
   bool Create(HINSTANCE instance) {
@@ -147,7 +154,7 @@ class PreeditOverlay {
     const int height =
         (std::max)(18, static_cast<int>(metrics.tmHeight) + pad_y * 2 + 2);
     const int left = caret.left;
-    const int top = caret.top;
+    const int top = OverlayTop(caret, mode, effective_font_height);
     const bool changed = !visible_ || text != text_ || mode != mode_ ||
                          dark != dark_background_ || left != left_ ||
                          top != top_ || width != width_ || height != height_ ||
