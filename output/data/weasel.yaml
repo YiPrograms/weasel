@@ -1,7 +1,7 @@
 # Weasel settings
 # encoding: utf-8
 
-config_version: "0.32"
+config_version: "0.34"
 
 app_options:
   cmd.exe:
@@ -22,9 +22,9 @@ style:
   font_face: Noto Sans TC
   label_font_face: Consolas
   comment_font_face: Noto Sans TC
-  font_point: 15
-  label_font_point: 13
-  comment_font_point: 13
+  font_point: 11
+  label_font_point: 12
+  comment_font_point: 11
   candidate_abbreviate_length: 0
   click_to_capture: false
   horizontal: false
@@ -43,16 +43,16 @@ style:
   layout:
     align_type: center
     max_width: 0	#set 0 to disable max width
-    min_width: 148
+    min_width: 72
     min_height: 0
     max_height: 0	#set 0 to disable max height
     border_width: 3
-    margin_x: 5
-    margin_y: 2
-    spacing: 3
+    margin_x: 3
+    margin_y: 1
+    spacing: 2
     candidate_spacing: 1
-    hilite_spacing: 2
-    hilite_padding: 3
+    hilite_spacing: 1
+    hilite_padding: 2
     round_corner: 0   #别名 hilited_corner_radius
     corner_radius: 0
     shadow_radius: 0
