@@ -50,17 +50,35 @@ class PreeditOverlay {
     }
     bool dark = dark_background_;
     if (mode == PreeditMode::Auto || mode == PreeditMode::Transparent) {
-      // Sample just OUTSIDE the popup so it never samples its own pixels.
-      // Hysteresis avoids flickering when the caret moves over antialiased text.
+      // A single pixel immediately to the left of the caret can be dark
+      // text, an I-beam, or the candidate border on an otherwise white
+      // editor. Take the median of several nearby pixels, mostly above or
+      // to the right of the preedit. This also avoids classifying our own
+      // popup as the underlying application background.
       HDC screen = GetDC(nullptr);
       if (screen) {
-        COLORREF color = GetPixel(screen, caret.left - 4,
-                                 caret.top + (caret.bottom - caret.top) / 2);
+        const POINT sample_points[] = {
+            {caret.left + 80, caret.top - 8},
+            {caret.left + 130, caret.top - 8},
+            {caret.left + 210, caret.top - 8},
+            {caret.left + 80, caret.top + 4},
+            {caret.left + 140, caret.top + 4},
+            {caret.left + 220, caret.top + 4},
+            {caret.left - 10, caret.top - 6}};
+        int brightnesses[sizeof(sample_points) / sizeof(sample_points[0])];
+        size_t valid = 0;
+        for (const POINT& point : sample_points) {
+          const COLORREF color = GetPixel(screen, point.x, point.y);
+          if (color == CLR_INVALID) continue;
+          brightnesses[valid++] = (299 * GetRValue(color) +
+                                   587 * GetGValue(color) +
+                                   114 * GetBValue(color)) / 1000;
+        }
         ReleaseDC(nullptr, screen);
-        if (color != CLR_INVALID) {
-          const int brightness = (299 * GetRValue(color) +
-                                  587 * GetGValue(color) +
-                                  114 * GetBValue(color)) / 1000;
+        if (valid != 0) {
+          std::sort(brightnesses, brightnesses + valid);
+          // Hysteresis prevents flashing while moving past text or borders.
+          const int brightness = brightnesses[valid / 2];
           if (brightness < 135) dark = true;
           if (brightness > 165) dark = false;
         }
