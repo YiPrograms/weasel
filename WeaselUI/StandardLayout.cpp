@@ -16,9 +16,8 @@ std::wstring StandardLayout::GetLabelText(const std::vector<Text>& labels,
   wchar_t portable[4] = {};
   if (GetEnvironmentVariableW(L"WEASEL_USER_MODE", portable,
                               _countof(portable)) == 1 &&
-      portable[0] == L'1' && rendered.size() >= 3 &&
-      rendered[0] >= L'0' && rendered[0] <= L'9' &&
-      rendered[1] == L'.')
+      portable[0] == L'1' && rendered.size() >= 3 && rendered[0] >= L'0' &&
+      rendered[0] <= L'9' && rendered[1] == L'.')
     rendered.erase(1, 1);
   return rendered;
 }
