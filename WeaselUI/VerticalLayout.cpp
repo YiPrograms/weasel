@@ -141,19 +141,9 @@ void weasel::VerticalLayout::DoLayout(CDCHandle dc, PDWR pDWR) {
       oc = (max_height_curren_candidate - _candidateCommentRects[i].Height());
     }
     _candidateLabelRects[i].OffsetRect(0, ol);
-    // Noto Sans TC's CJK glyphs and Consolas' Latin glyphs occupy different
-    // proportions of their line boxes. Align their *visible* glyph centers,
-    // not just their DirectWrite layout-rectangle centers. A one-pixel
-    // downward correction at 96 DPI matches the screenshot-style labels.
-    wchar_t portable_mode[4] = {};
-    if (GetEnvironmentVariableW(L"WEASEL_USER_MODE", portable_mode,
-                                _countof(portable_mode)) == 1 &&
-        portable_mode[0] == L'1' && (_style.border > 0) &&
-        (_style.label_font_point > 0)) {
-      const int optical_correction =
-          (std::max)(1, static_cast<int>(pDWR->dpiScaleLayout + 0.5f));
-      _candidateLabelRects[i].OffsetRect(0, optical_correction);
-    }
+    // Use the same row-center alignment as the candidate glyphs. Shifting
+    // labels after layout enlarges the highlight's bounds and can clip the
+    // last row against the frame when candidate_spacing is small.
     _candidateTextRects[i].OffsetRect(0, ot);
     _candidateCommentRects[i].OffsetRect(0, oc);
 

@@ -52,8 +52,18 @@ Layout::Layout(const UIStyle& style,
       offsetY -= _style.shadow_radius / 2;
     }
   }
-  offsetX += _style.border * 2;
-  offsetY += _style.border * 2;
+  // The opaque orange User Mode frame is painted inside the layered
+  // window; only one border width is needed on each side. Reserving twice
+  // the width made the compact popup look heavily padded.
+  wchar_t user_mode[4] = {};
+  const bool orange_user_mode =
+      GetEnvironmentVariableW(L"WEASEL_USER_MODE", user_mode,
+                              _countof(user_mode)) == 1 &&
+      user_mode[0] == L'1' &&
+      (_style.border_color & 0x00ffffff) == 0x008cff;
+  const int border_space = orange_user_mode ? _style.border : _style.border * 2;
+  offsetX += border_space;
+  offsetY += border_space;
 }
 
 GraphicsRoundRectPath::GraphicsRoundRectPath(const CRect rc,

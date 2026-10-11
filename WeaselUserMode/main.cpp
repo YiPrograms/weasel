@@ -796,6 +796,18 @@ bool GetAutomationCaret(IUIAutomation* automation,
       return false;
   }
 
+  wchar_t window_class[80] = {};
+  GetClassNameW(foreground, window_class, _countof(window_class));
+  if (_wcsicmp(window_class, L"Chrome_WidgetWin_1") == 0) {
+    // A browser document can expose a TextPattern selection even when the
+    // keyboard focus is on the page body. That is not an editable caret.
+    CONTROLTYPEID control_type = 0;
+    if (FAILED(focused->get_CurrentControlType(&control_type)) ||
+        (control_type != UIA_EditControlTypeId &&
+         control_type != UIA_ComboBoxControlTypeId))
+      return false;
+  }
+
   RECT browser_end = {};
   int browser_font_height = font_height_px;
   const bool browser_estimated = BrowserValueEndCaret(
@@ -858,7 +870,10 @@ void CaretSamplerLoop() {
   CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
                    IID_PPV_ARGS(&automation));
   while (!g_stop_worker.load()) {
-    const HWND foreground = g_requested_window.load();
+    // Sample the foreground independently of the interception decision.
+    // Chromium interception is allowed only with a recent real UIA caret;
+    // sampling g_requested_window would create a circular dependency.
+    const HWND foreground = GetForegroundWindow();
     RECT caret = {};
     int font_height_px = 0;
     const bool found =
@@ -1121,6 +1136,19 @@ bool ForegroundUsesPlainKeyboardLayout() {
     if ((_wcsicmp(class_name, L"Edit") == 0 ||
          _wcsnicmp(class_name, L"RichEdit", 8) == 0) &&
         (GetWindowLongPtrW(info.hwndFocus, GWL_STYLE) & ES_PASSWORD))
+      return false;
+  }
+
+  // Chromium renders editable controls inside its top-level HWND. Falling
+  // back to that HWND's (6,6) client origin when focus is on the page body
+  // steals browsing shortcuts and shows candidates at the screen's corner.
+  // Fail open until the background UIA sampler confirms an actual caret.
+  wchar_t foreground_class[64] = {};
+  GetClassNameW(foreground, foreground_class, _countof(foreground_class));
+  if (_wcsicmp(foreground_class, L"Chrome_WidgetWin_1") == 0) {
+    std::lock_guard<std::mutex> guard(g_caret_mutex);
+    if (g_uia_window != foreground || !g_uia_timestamp ||
+        GetTickCount64() - g_uia_timestamp >= 350)
       return false;
   }
 

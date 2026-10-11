@@ -38,12 +38,11 @@ The packaged `output/data/weasel.yaml` defaults to `screenshot_orange`:
 - Selected text white, normal text black
 - **Noto Sans TC** for Chinese/candidate/emoji fallback
 - **Consolas** for candidate selection labels, such as `1QY`, `2AH`
-- Square edges and solid orange border with compact **11pt Noto Sans TC**
-  candidate text and **12pt Consolas** labels. The separate font sizes match
-  visible glyph heights more closely; the User Mode vertical layout applies
-  a DPI-aware 1px optical correction to the labels. Candidate rows have
-  compact padding, and the window width follows the actual candidate content
-  rather than imposing a large minimum width.
+- Square edges and a solid 3px orange border with **10pt Noto Sans TC**
+  candidate text and **11pt Consolas** labels. Labels and text share the
+  same row-center alignment without an extra positional offset. The
+  User Mode layout reserves one border width (not two) around its compact
+  content, and the window width follows the candidate text.
 
 Install Noto Sans TC and Consolas for the intended appearance; Windows substitutes available fonts if they are missing. The monospace font affects the Rime-provided label, not candidate text. Source labels and number of candidates depend on the installed Rime schema.
 
