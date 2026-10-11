@@ -533,39 +533,6 @@ void WeaselPanel::_HighlightText(CDCHandle& dc,
                                  const BackType& type = BackType::TEXT,
                                  const IsToRoundStruct& rd = IsToRoundStruct(),
                                  const COLORREF& bordercolor = TRANS_COLOR) {
-  // Screenshot-orange candidate panel: draw the reference's square, solid
-  // 4px frame in device pixels. A GDI+ stroked path is centered on the
-  // rectangle edge and antialiases to pale-orange pixels, leaving a visible
-  // seam where the selected row meets the border.
-  wchar_t portable_mode[4] = {};
-  if (type == BackType::BACKGROUND &&
-      GetEnvironmentVariableW(L"WEASEL_USER_MODE", portable_mode,
-                              _countof(portable_mode)) == 1 &&
-      portable_mode[0] == L'1' && (bordercolor & 0x00ffffff) == 0x008cff) {
-    const int thickness = (std::max)(1, DPI_SCALE(m_style.border));
-    // This panel is composited using UpdateLayeredWindow. GDI FillRect
-    // writes RGB but leaves the DIB alpha channel at 0, making both the
-    // frame and selected row invisible. Use fully opaque GDI+ rectangles
-    // instead, with smoothing disabled for exact four-pixel edges.
-    Gdiplus::Graphics graphics(dc);
-    graphics.SetSmoothingMode(Gdiplus::SmoothingModeNone);
-    graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
-    Gdiplus::SolidBrush background(Gdiplus::Color::MakeARGB(
-        255, GetRValue(color), GetGValue(color), GetBValue(color)));
-    Gdiplus::SolidBrush frame(Gdiplus::Color::MakeARGB(
-        255, GetRValue(bordercolor), GetGValue(bordercolor),
-        GetBValue(bordercolor)));
-    graphics.FillRectangle(&background, rc.left, rc.top, rc.Width(),
-                           rc.Height());
-    graphics.FillRectangle(&frame, rc.left, rc.top, rc.Width(), thickness);
-    graphics.FillRectangle(&frame, rc.left, rc.bottom - thickness, rc.Width(),
-                           thickness);
-    graphics.FillRectangle(&frame, rc.left, rc.top, thickness, rc.Height());
-    graphics.FillRectangle(&frame, rc.right - thickness, rc.top, thickness,
-                           rc.Height());
-    return;
-  }
-
   // Graphics obj with SmoothingMode
   Gdiplus::Graphics g_back(dc);
   g_back.SetSmoothingMode(Gdiplus::SmoothingMode::SmoothingModeHighQuality);
@@ -859,8 +826,7 @@ bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
       }
     }
     // draw non highlighted candidates, without shadow
-    if (!orange_user_mode &&
-        (COLORNOTTRANSPARENT(m_style.candidate_back_color) ||
+    if ((COLORNOTTRANSPARENT(m_style.candidate_back_color) ||
          COLORNOTTRANSPARENT(m_style.candidate_border_color))) {
       for (auto i = 0; i < m_candidateCount && i < MAX_CANDIDATES_COUNT; ++i) {
         if (i == m_ctx.cinfo.highlighted || i == m_hoverIndex)
@@ -907,49 +873,21 @@ bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
       rect.InflateRect(DPI_SCALE(m_style.hilite_padding_x),
                        DPI_SCALE(m_style.hilite_padding_y));
       if (orange_user_mode) {
-        // The reference theme has a single continuous orange frame and
-        // an edge-to-edge selected row. Standard Weasel uses per-candidate
-        // padding, leaving thin white gutters between the selection and
-        // the border. Fill the rectangle in exact device pixels instead.
-        // rcw is the actual drawable client area. The layout's content
-        // rectangle can be inset by shadow/DPI offsets and, on some
-        // portable arrangements, clipping the row to it produces an empty
-        // selection. Use the same bounds as the final layered window.
-        const CRect panel = rcw;
-        const int border = (std::max)(1, DPI_SCALE(m_style.border));
-        rect.left = panel.left + border;
-        rect.right = panel.right - border;
+        // Preserve Weasel's proven layered-window GDI+ FillPath painter.
+        // Only extend the selected rectangle into the orange frame. The
+        // original per-row margins otherwise leave white vertical gutters.
+        const int half_border = (std::max)(1, DPI_SCALE(m_style.border) / 2);
+        rect.left = rcw.left + half_border;
+        rect.right = rcw.right - half_border;
         if (m_ctx.cinfo.highlighted == 0)
-          rect.top = panel.top + border;
+          rect.top = rcw.top + half_border;
         if (m_ctx.cinfo.highlighted + 1 == m_candidateCount)
-          rect.bottom = panel.bottom - border;
-        rect.top = (std::max)(rect.top, panel.top + border);
-        rect.bottom = (std::min)(rect.bottom, panel.bottom - border);
-        if (rect.Width() > 0 && rect.Height() > 0) {
-          // Write opaque alpha, not a transparent GDI brush.
-          Gdiplus::Graphics graphics(dc);
-          graphics.SetSmoothingMode(Gdiplus::SmoothingModeNone);
-          graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
-          const COLORREF selected = m_style.hilited_candidate_back_color;
-          Gdiplus::SolidBrush brush(Gdiplus::Color::MakeARGB(
-              255, GetRValue(selected), GetGValue(selected),
-              GetBValue(selected)));
-          graphics.FillRectangle(&brush, rect.left, rect.top, rect.Width(),
-                                 rect.Height());
-        } else {
-          // Never make the selected white label invisible if a layout
-          // unexpectedly supplies an empty rectangle.
-          _HighlightText(dc, m_layout->GetHighlightRect(),
-                         m_style.hilited_candidate_back_color, 0,
-                         DPI_SCALE(m_style.round_corner), bkType, rd,
-                         m_style.hilited_candidate_border_color);
-        }
-      } else {
-        _HighlightText(dc, rect, m_style.hilited_candidate_back_color,
-                       markSt ? m_style.hilited_candidate_shadow_color : 0,
-                       DPI_SCALE(m_style.round_corner), bkType, rd,
-                       m_style.hilited_candidate_border_color);
+          rect.bottom = rcw.bottom - half_border;
       }
+      _HighlightText(dc, rect, m_style.hilited_candidate_back_color,
+                     markSt ? m_style.hilited_candidate_shadow_color : 0,
+                     DPI_SCALE(m_style.round_corner), bkType, rd,
+                     m_style.hilited_candidate_border_color);
       if (m_style.mark_text.empty() &&
           COLORNOTTRANSPARENT(m_style.hilited_mark_color)) {
         int height =
