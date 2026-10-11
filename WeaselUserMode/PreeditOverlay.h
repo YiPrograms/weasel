@@ -203,9 +203,9 @@ class PreeditOverlay {
         bgra[i * 4 + 3] = static_cast<BYTE>(combined);
       }
     }
-    const POINT origin = {left_, top_};
-    const SIZE size = {width_, height_};
-    const POINT src = {0, 0};
+    POINT origin = {left_, top_};
+    SIZE size = {width_, height_};
+    POINT src = {0, 0};
     BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
     SetWindowPos(hwnd_, HWND_TOPMOST, left_, top_, width_, height_,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOREDRAW);
