@@ -551,18 +551,26 @@ void WeaselPanel::_HighlightText(CDCHandle& dc,
     g.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
     if (type == BackType::BACKGROUND) {
       Gdiplus::SolidBrush white(Gdiplus::Color(255, 255, 255, 255));
-      const int thick = (std::max)(1, DPI_SCALE(m_style.border));
-      Gdiplus::SolidBrush orange(Gdiplus::Color(255, 255, 140, 0));
-      g.FillRectangle(&white, rc.left, rc.top, rc.Width(), rc.Height());
-      g.FillRectangle(&orange, rc.left, rc.top, rc.Width(), thick);
-      g.FillRectangle(&orange, rc.left, rc.bottom - thick, rc.Width(), thick);
-      g.FillRectangle(&orange, rc.left, rc.top, thick, rc.Height());
-      g.FillRectangle(&orange, rc.right - thick, rc.top, thick, rc.Height());
+      // Fill the entire *window*, not GetContentRect(). ContentRect may be
+      // smaller than rcw when Weasel reserves layout offsets, so painting its
+      // own frame would leave the bottom/side frame missing. A single final
+      // frame is drawn after all candidate backgrounds and glyphs.
+      g.FillRectangle(&white, rcw.left, rcw.top, rcw.Width(), rcw.Height());
       return;
     }
     if ((color & 0x00ffffff) == 0x008cff && COLORNOTTRANSPARENT(color)) {
+      // The selected candidate's layout rect may extend beyond the panel at
+      // the top (especially the first row). Clip to the INSIDE of the final
+      // three-pixel border; otherwise the orange highlight escapes the frame.
+      const int thick = (std::max)(1, DPI_SCALE(m_style.border));
+      const int left = (std::max)(rc.left, rcw.left + thick);
+      const int top = (std::max)(rc.top, rcw.top + thick);
+      const int right = (std::min)(rc.right, rcw.right - thick);
+      const int bottom = (std::min)(rc.bottom, rcw.bottom - thick);
+      if (left >= right || top >= bottom)
+        return;
       Gdiplus::SolidBrush selected(Gdiplus::Color(255, 255, 140, 0));
-      g.FillRectangle(&selected, rc.left, rc.top, rc.Width(), rc.Height());
+      g.FillRectangle(&selected, left, top, right - left, bottom - top);
       return;
     }
   }
@@ -1202,6 +1210,25 @@ void WeaselPanel::DoPaint(CDCHandle dc) {
     const size_t pixel_count = static_cast<size_t>(rcw.Width()) * rcw.Height();
     for (size_t i = 0; i < pixel_count; ++i)
       bytes[4 * i + 3] = 255;
+    // Always paint the outer frame LAST, in client coordinates. This repairs
+    // all four edges and corners even if candidate highlight rects from the
+    // layout reach outside GetContentRect(). It also avoids AA/alpha seams.
+    if (rcw.Width() > 0 && rcw.Height() > 0) {
+      const int thick = (std::min)((std::max)(1, DPI_SCALE(m_style.border)),
+                                   (std::min)(rcw.Width(), rcw.Height()) / 2);
+      if (thick > 0) {
+        Gdiplus::Graphics frame(memDC);
+        frame.SetSmoothingMode(Gdiplus::SmoothingModeNone);
+        frame.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+        Gdiplus::SolidBrush orange(Gdiplus::Color(255, 255, 140, 0));
+        frame.FillRectangle(&orange, rcw.left, rcw.top, rcw.Width(), thick);
+        frame.FillRectangle(&orange, rcw.left, rcw.bottom - thick, rcw.Width(),
+                            thick);
+        frame.FillRectangle(&orange, rcw.left, rcw.top, thick, rcw.Height());
+        frame.FillRectangle(&orange, rcw.right - thick, rcw.top, thick,
+                            rcw.Height());
+      }
+    }
   }
   _LayerUpdate(rcw, memDC);
 
