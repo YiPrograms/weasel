@@ -543,19 +543,26 @@ void WeaselPanel::_HighlightText(CDCHandle& dc,
                               _countof(portable_mode)) == 1 &&
       portable_mode[0] == L'1' && (bordercolor & 0x00ffffff) == 0x008cff) {
     const int thickness = (std::max)(1, DPI_SCALE(m_style.border));
-    HBRUSH background = CreateSolidBrush(color);
-    FillRect(dc, &rc, background);
-    DeleteObject(background);
-    HBRUSH frame = CreateSolidBrush(bordercolor);
-    RECT edge = {rc.left, rc.top, rc.right, rc.top + thickness};
-    FillRect(dc, &edge, frame);
-    edge = {rc.left, rc.bottom - thickness, rc.right, rc.bottom};
-    FillRect(dc, &edge, frame);
-    edge = {rc.left, rc.top, rc.left + thickness, rc.bottom};
-    FillRect(dc, &edge, frame);
-    edge = {rc.right - thickness, rc.top, rc.right, rc.bottom};
-    FillRect(dc, &edge, frame);
-    DeleteObject(frame);
+    // This panel is composited using UpdateLayeredWindow. GDI FillRect
+    // writes RGB but leaves the DIB alpha channel at 0, making both the
+    // frame and selected row invisible. Use fully opaque GDI+ rectangles
+    // instead, with smoothing disabled for exact four-pixel edges.
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeNone);
+    graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+    Gdiplus::SolidBrush background(Gdiplus::Color::MakeARGB(
+        255, GetRValue(color), GetGValue(color), GetBValue(color)));
+    Gdiplus::SolidBrush frame(Gdiplus::Color::MakeARGB(
+        255, GetRValue(bordercolor), GetGValue(bordercolor),
+        GetBValue(bordercolor)));
+    graphics.FillRectangle(&background, rc.left, rc.top, rc.Width(),
+                           rc.Height());
+    graphics.FillRectangle(&frame, rc.left, rc.top, rc.Width(), thickness);
+    graphics.FillRectangle(&frame, rc.left, rc.bottom - thickness, rc.Width(),
+                           thickness);
+    graphics.FillRectangle(&frame, rc.left, rc.top, thickness, rc.Height());
+    graphics.FillRectangle(&frame, rc.right - thickness, rc.top, thickness,
+                           rc.Height());
     return;
   }
 
@@ -919,11 +926,16 @@ bool WeaselPanel::_DrawCandidates(CDCHandle& dc, bool back) {
         rect.top = (std::max)(rect.top, panel.top + border);
         rect.bottom = (std::min)(rect.bottom, panel.bottom - border);
         if (rect.Width() > 0 && rect.Height() > 0) {
-          // Opaque GDI fill, pixel-aligned: no AA fringes or alpha
-          // compositing against the orange frame.
-          HBRUSH brush = CreateSolidBrush(m_style.hilited_candidate_back_color);
-          FillRect(dc, &rect, brush);
-          DeleteObject(brush);
+          // Write opaque alpha, not a transparent GDI brush.
+          Gdiplus::Graphics graphics(dc);
+          graphics.SetSmoothingMode(Gdiplus::SmoothingModeNone);
+          graphics.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+          const COLORREF selected = m_style.hilited_candidate_back_color;
+          Gdiplus::SolidBrush brush(Gdiplus::Color::MakeARGB(
+              255, GetRValue(selected), GetGValue(selected),
+              GetBValue(selected)));
+          graphics.FillRectangle(&brush, rect.left, rect.top, rect.Width(),
+                                 rect.Height());
         } else {
           // Never make the selected white label invisible if a layout
           // unexpectedly supplies an empty rectangle.
