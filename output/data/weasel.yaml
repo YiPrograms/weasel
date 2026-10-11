@@ -1,7 +1,7 @@
 # Weasel settings
 # encoding: utf-8
 
-config_version: "0.26"
+config_version: "0.28"
 
 app_options:
   cmd.exe:
@@ -22,9 +22,9 @@ style:
   font_face: Noto Sans TC
   label_font_face: Consolas
   comment_font_face: Noto Sans TC
-  font_point: 28
-  label_font_point: 28
-  comment_font_point: 28
+  font_point: 26
+  label_font_point: 26
+  comment_font_point: 26
   candidate_abbreviate_length: 0
   click_to_capture: false
   horizontal: false
@@ -50,8 +50,8 @@ style:
     margin_x: 10
     margin_y: 5
     spacing: 7
-    candidate_spacing: 16
-    hilite_spacing: 10
+    candidate_spacing: 2
+    hilite_spacing: 4
     hilite_padding: 7
     round_corner: 0   #别名 hilited_corner_radius
     corner_radius: 0
