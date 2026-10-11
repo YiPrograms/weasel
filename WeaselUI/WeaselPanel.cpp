@@ -533,6 +533,39 @@ void WeaselPanel::_HighlightText(CDCHandle& dc,
                                  const BackType& type = BackType::TEXT,
                                  const IsToRoundStruct& rd = IsToRoundStruct(),
                                  const COLORREF& bordercolor = TRANS_COLOR) {
+  // A screenshot-orange user-mode panel is an entirely opaque rectangular
+  // surface. In particular, GDI+ antialiased rounded paths leave partially
+  // transparent border pixels and incorrect edge colours when passed to
+  // UpdateLayeredWindow(ULW_ALPHA). Paint exact pixel-aligned rectangles with
+  // SourceCopy so the frame and selection have alpha=255, independent of the
+  // desktop wallpaper or the underlying editor.
+  wchar_t portable_mode[4] = {};
+  const bool orange_user_mode =
+      GetEnvironmentVariableW(L"WEASEL_USER_MODE", portable_mode,
+                              _countof(portable_mode)) == 1 &&
+      portable_mode[0] == L'1' &&
+      (m_style.border_color & 0x00ffffff) == 0x008cff;
+  if (orange_user_mode) {
+    Gdiplus::Graphics g(dc);
+    g.SetSmoothingMode(Gdiplus::SmoothingModeNone);
+    g.SetCompositingMode(Gdiplus::CompositingModeSourceCopy);
+    if (type == BackType::BACKGROUND) {
+      Gdiplus::SolidBrush white(Gdiplus::Color(255, 255, 255, 255));
+      const int thick = (std::max)(1, DPI_SCALE(m_style.border));
+      Gdiplus::SolidBrush orange(Gdiplus::Color(255, 255, 140, 0));
+      g.FillRectangle(&white, rc.left, rc.top, rc.Width(), rc.Height());
+      g.FillRectangle(&orange, rc.left, rc.top, rc.Width(), thick);
+      g.FillRectangle(&orange, rc.left, rc.bottom - thick, rc.Width(), thick);
+      g.FillRectangle(&orange, rc.left, rc.top, thick, rc.Height());
+      g.FillRectangle(&orange, rc.right - thick, rc.top, thick, rc.Height());
+      return;
+    }
+    if ((color & 0x00ffffff) == 0x008cff && COLORNOTTRANSPARENT(color)) {
+      Gdiplus::SolidBrush selected(Gdiplus::Color(255, 255, 140, 0));
+      g.FillRectangle(&selected, rc.left, rc.top, rc.Width(), rc.Height());
+      return;
+    }
+  }
   // Graphics obj with SmoothingMode
   Gdiplus::Graphics g_back(dc);
   g_back.SetSmoothingMode(Gdiplus::SmoothingMode::SmoothingModeHighQuality);
@@ -1010,8 +1043,40 @@ void WeaselPanel::DoPaint(CDCHandle dc) {
   // prepare memDC
   CDCHandle hdc = ::GetDC(m_hWnd);
   CDCHandle memDC = ::CreateCompatibleDC(hdc);
-  HBITMAP memBitmap = ::CreateCompatibleBitmap(hdc, rcw.Width(), rcw.Height());
-  ::SelectObject(memDC, memBitmap);
+  wchar_t portable_mode[4] = {};
+  const bool opaque_orange_panel =
+      GetEnvironmentVariableW(L"WEASEL_USER_MODE", portable_mode,
+                              _countof(portable_mode)) == 1 &&
+      portable_mode[0] == L'1' &&
+      (m_style.border_color & 0x00ffffff) == 0x008cff;
+  HBITMAP memBitmap = nullptr;
+  void* pixels = nullptr;
+  if (opaque_orange_panel) {
+    // Layered windows must be backed by a predictable 32-bit BGRA image.
+    // CreateCompatibleBitmap does not guarantee an initialized alpha plane.
+    BITMAPINFO info = {};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = rcw.Width();
+    info.bmiHeader.biHeight = -rcw.Height();  // top-down
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    memBitmap =
+        CreateDIBSection(hdc, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+  }
+  if (!memBitmap)
+    memBitmap = ::CreateCompatibleBitmap(hdc, rcw.Width(), rcw.Height());
+  HGDIOBJ old_bitmap = ::SelectObject(memDC, memBitmap);
+  if (pixels) {
+    auto* bytes = static_cast<BYTE*>(pixels);
+    const size_t pixel_count = static_cast<size_t>(rcw.Width()) * rcw.Height();
+    for (size_t i = 0; i < pixel_count; ++i) {
+      bytes[4 * i + 0] = 255;
+      bytes[4 * i + 1] = 255;
+      bytes[4 * i + 2] = 255;
+      bytes[4 * i + 3] = 255;
+    }
+  }
   ReleaseDC(hdc);
   bool drawn = false;
   if (!hide_candidates) {
@@ -1128,9 +1193,20 @@ void WeaselPanel::DoPaint(CDCHandle dc) {
     if (!drawn)
       ShowWindow(SW_HIDE);
   }
+  if (pixels) {
+    // DirectWrite's HDC rendering can clear alpha without changing RGB.
+    // The screenshot theme has no shadows or rounded corners: ALL client
+    // pixels must remain fully opaque, including antialiased glyph edges.
+    GdiFlush();
+    auto* bytes = static_cast<BYTE*>(pixels);
+    const size_t pixel_count = static_cast<size_t>(rcw.Width()) * rcw.Height();
+    for (size_t i = 0; i < pixel_count; ++i)
+      bytes[4 * i + 3] = 255;
+  }
   _LayerUpdate(rcw, memDC);
 
   // clean objs
+  ::SelectObject(memDC, old_bitmap);
   ::DeleteDC(memDC);
   ::DeleteObject(memBitmap);
 }

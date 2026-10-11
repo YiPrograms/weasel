@@ -32,6 +32,9 @@ If the overlay window cannot be created, User Mode disables overlay and keeps th
 The packaged `output/data/weasel.yaml` defaults to `screenshot_orange`:
 
 - White candidate background with `#FF8C00` border and selected row
+- The entire candidate panel is painted into a 32-bit opaque BGRA canvas;
+  the theme uses explicit alpha `FF` on all visible colors. No glass/
+  translucency effects are allowed in the candidate popup.
 - Selected text white, normal text black
 - **Noto Sans TC** for Chinese/candidate/emoji fallback
 - **Consolas** for candidate selection labels, such as `1QY`, `2AH`
