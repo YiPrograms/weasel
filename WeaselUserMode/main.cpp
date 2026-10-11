@@ -75,6 +75,8 @@ std::mutex g_caret_mutex;
 RECT g_uia_caret = {};
 HWND g_uia_window = nullptr;
 ULONGLONG g_uia_timestamp = 0;
+HWND g_sampled_font_window = nullptr;
+int g_sampled_font_height_px = 0;
 std::atomic<bool> g_stop_worker{false};
 std::atomic<bool> g_worker_ready{false};
 std::atomic<bool> g_fail_open{false};
@@ -154,7 +156,8 @@ bool LaunchDeployer(const wchar_t* arguments) {
 // candidate list. Do not hand a Context to the generic deserializer: doing so
 // also deserializes ctx.cand via Boost archive on every keystroke, and was
 // crashing the portable frontend on Windows (0xc0000005).
-bool DrainResponse(std::wstring* commit = nullptr, bool capture_preedit = false) {
+bool DrainResponse(std::wstring* commit = nullptr,
+                   bool capture_preedit = false) {
   weasel::Status status{};
   weasel::ResponseParser parser(commit, nullptr, &status);
   std::wstring preedit;
@@ -211,7 +214,8 @@ PreeditMode LoadOverlayMode() {
 }
 
 void SetOverlayMode(int value) {
-  if (value < 0 || value > 3) return;
+  if (value < 0 || value > 3)
+    return;
   g_overlay_mode = static_cast<PreeditMode>(value);
   g_overlay.Hide();
   HKEY key = nullptr;
@@ -308,7 +312,8 @@ bool RegisterToggleHotkey() {
 void SmokeTrace(const char* stage);
 std::atomic<bool> g_smoke_test_mode{false};
 void TraceBootstrap(const char* stage) {
-  if (g_smoke_test_mode.load()) SmokeTrace(stage);
+  if (g_smoke_test_mode.load())
+    SmokeTrace(stage);
 }
 bool ConnectServer() {
   TraceBootstrap("bootstrap:before-echo");
@@ -352,13 +357,15 @@ bool ConnectServer() {
 void SmokeTrace(const char* stage) {
   wchar_t path[MAX_PATH] = {};
   const DWORD length = GetTempPathW(ARRAYSIZE(path), path);
-  if (!length || length >= ARRAYSIZE(path)) return;
+  if (!length || length >= ARRAYSIZE(path))
+    return;
   std::wstring full(path);
   full += L"weasel-user-mode-smoke.log";
   HANDLE file = CreateFileW(full.c_str(), FILE_APPEND_DATA,
                             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) return;
+  if (file == INVALID_HANDLE_VALUE)
+    return;
   DWORD written = 0;
   WriteFile(file, stage, static_cast<DWORD>(strlen(stage)), &written, nullptr);
   WriteFile(file, "\r\n", 2, &written, nullptr);
@@ -495,9 +502,61 @@ bool BoundsForTextRange(IUIAutomationTextRange* range, RECT& result) {
   return true;
 }
 
+// UI Automation FontSize is expressed in points. Convert to physical pixels
+// using the target window's DPI; do not confuse it with the candidate
+// theme's independent font size or the system-DPI of the overlay process.
+int TextRangeFontHeight(IUIAutomationTextRange* range, HWND foreground) {
+  if (!range)
+    return 0;
+  VARIANT value;
+  VariantInit(&value);
+  int height_px = 0;
+  if (SUCCEEDED(range->GetAttributeValue(UIA_FontSizeAttributeId, &value))) {
+    double points = 0;
+    if (value.vt == VT_R8)
+      points = value.dblVal;
+    else if (value.vt == VT_R4)
+      points = value.fltVal;
+    else if (value.vt == VT_I4)
+      points = static_cast<double>(value.lVal);
+    if (std::isfinite(points) && points >= 6 && points <= 72) {
+      const UINT dpi = GetDpiForWindow(foreground);
+      height_px =
+          static_cast<int>(std::lround(points * (dpi ? dpi : 96) / 72.0));
+    }
+  }
+  VariantClear(&value);
+  return height_px;
+}
+
+// Standard Win32 edit controls (including classic Notepad and many native
+// widgets) expose an HFONT. Limit the cross-process message timeout so a
+// hung editor can never delay the keyboard hook or Rime IPC worker.
+int FocusedControlFontHeight(HWND foreground) {
+  if (!foreground)
+    return 0;
+  const DWORD thread_id = GetWindowThreadProcessId(foreground, nullptr);
+  GUITHREADINFO info = {};
+  info.cbSize = sizeof(info);
+  if (!thread_id || !GetGUIThreadInfo(thread_id, &info))
+    return 0;
+  HWND focus = info.hwndFocus ? info.hwndFocus : foreground;
+  DWORD_PTR font_result = 0;
+  if (!SendMessageTimeoutW(focus, WM_GETFONT, 0, 0,
+                           SMTO_ABORTIFHUNG | SMTO_BLOCK, 35, &font_result) ||
+      !font_result)
+    return 0;
+  LOGFONTW logfont = {};
+  if (GetObjectW(reinterpret_cast<HFONT>(font_result), sizeof(logfont),
+                 &logfont) != sizeof(logfont))
+    return 0;
+  return std::abs(static_cast<int>(logfont.lfHeight));
+}
+
 bool GetAutomationCaret(IUIAutomation* automation,
                         HWND foreground,
-                        RECT& rect) {
+                        RECT& rect,
+                        int& font_height_px) {
   if (!automation || !foreground)
     return false;
   Microsoft::WRL::ComPtr<IUIAutomationElement> focused;
@@ -517,8 +576,10 @@ bool GetAutomationCaret(IUIAutomation* automation,
     BOOL active = FALSE;
     Microsoft::WRL::ComPtr<IUIAutomationTextRange> range;
     if (SUCCEEDED(text2->GetCaretRange(&active, &range)) && active &&
-        BoundsForTextRange(range.Get(), rect))
+        BoundsForTextRange(range.Get(), rect)) {
+      font_height_px = TextRangeFontHeight(range.Get(), foreground);
       return true;
+    }
   }
 
   Microsoft::WRL::ComPtr<IUIAutomationTextPattern> text;
@@ -531,8 +592,10 @@ bool GetAutomationCaret(IUIAutomation* automation,
       if (SUCCEEDED(selection->get_Length(&count)) && count > 0) {
         Microsoft::WRL::ComPtr<IUIAutomationTextRange> range;
         if (SUCCEEDED(selection->GetElement(count - 1, &range)) &&
-            BoundsForTextRange(range.Get(), rect))
+            BoundsForTextRange(range.Get(), rect)) {
+          font_height_px = TextRangeFontHeight(range.Get(), foreground);
           return true;
+        }
       }
     }
   }
@@ -549,13 +612,24 @@ void CaretSamplerLoop() {
   while (!g_stop_worker.load()) {
     const HWND foreground = g_requested_window.load();
     RECT caret = {};
-    const bool found = foreground && foreground == GetForegroundWindow() &&
-                       GetAutomationCaret(automation.Get(), foreground, caret);
+    int font_height_px = 0;
+    const bool found =
+        foreground && foreground == GetForegroundWindow() &&
+        GetAutomationCaret(automation.Get(), foreground, caret, font_height_px);
+    if (foreground && foreground == GetForegroundWindow() && !font_height_px)
+      font_height_px = FocusedControlFontHeight(foreground);
     {
       std::lock_guard<std::mutex> guard(g_caret_mutex);
       g_uia_window = found ? foreground : nullptr;
       g_uia_caret = caret;
       g_uia_timestamp = found ? GetTickCount64() : 0;
+      if (foreground != g_sampled_font_window) {
+        g_sampled_font_window = foreground;
+        g_sampled_font_height_px = 0;
+      }
+      if (font_height_px > 0)
+        g_sampled_font_height_px =
+            PreeditOverlay::NormalizeFontHeight(font_height_px);
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(120));
   }
@@ -608,6 +682,23 @@ RECT GetInputPosition() {
   return result;
 }
 
+int GetTargetFontHeight(const RECT& caret) {
+  const HWND foreground = GetForegroundWindow();
+  {
+    std::lock_guard<std::mutex> guard(g_caret_mutex);
+    if (foreground && foreground == g_sampled_font_window &&
+        g_sampled_font_height_px > 0)
+      return g_sampled_font_height_px;
+  }
+  // Some apps have no accessible font object. The caret's screen-space
+  // height is a closer approximation than a fixed 20pt overlay.
+  const int caret_height = caret.bottom - caret.top;
+  if (caret_height >= 12 && caret_height <= 96)
+    return PreeditOverlay::NormalizeFontHeight(
+        static_cast<int>(std::lround(caret_height * 0.82)));
+  return PreeditOverlay::NormalizeFontHeight(0);
+}
+
 // Candidates and the visual preedit are independent topmost windows. Without
 // extra room, Weasel places the popup just 6 px beneath the caret's bottom,
 // which often falls INSIDE our 20pt preedit window. Never fix that by raising
@@ -616,14 +707,10 @@ RECT GetInputPosition() {
 // the two windows spatially separate even before the first preedit response.
 RECT GetCandidateInputPosition() {
   RECT result = GetInputPosition();
-  if (g_overlay_mode == PreeditMode::Off ||
-      result.bottom <= result.top)
+  if (g_overlay_mode == PreeditMode::Off || result.bottom <= result.top)
     return result;
-  HDC screen = GetDC(nullptr);
-  const int dpi = screen ? GetDeviceCaps(screen, LOGPIXELSY) : 96;
-  if (screen) ReleaseDC(nullptr, screen);
-  // Overlay font: 20 pt, plus its vertical padding and composition underline.
-  const int reserved = MulDiv(20, dpi > 0 ? dpi : 96, 72) + 14;
+  const int reserved = PreeditOverlay::CandidateClearance(
+      g_overlay_mode, GetTargetFontHeight(result));
   result.bottom = (std::max)(result.bottom, result.top + reserved);
   return result;
 }
@@ -632,7 +719,8 @@ RECT GetCandidateInputPosition() {
 // candidate popup. Only use a caret actually reported by UIA or Win32.
 bool GetOverlayCaret(RECT& result) {
   const HWND foreground = GetForegroundWindow();
-  if (!foreground) return false;
+  if (!foreground)
+    return false;
   {
     std::lock_guard<std::mutex> guard(g_caret_mutex);
     if (g_uia_window == foreground && g_uia_timestamp &&
@@ -678,7 +766,7 @@ void RefreshOverlay() {
     std::lock_guard<std::mutex> guard(g_preedit_mutex);
     preedit = g_preedit_text;
   }
-  g_overlay.Update(preedit, caret, g_overlay_mode);
+  g_overlay.Update(preedit, caret, g_overlay_mode, GetTargetFontHeight(caret));
 }
 
 // ImmIsIME() can return TRUE for a regular keyboard HKL (verified on the
@@ -1073,14 +1161,15 @@ void WorkerLoop() {
           continue;
 
         // Ctrl+Space is a frontend shortcut, independent of Rime schemas.
-        // Only the worker touches IPC; the low-level keyboard hook never blocks.
+        // Only the worker touches IPC; the low-level keyboard hook never
+        // blocks.
         if (key.language_toggle) {
           if (key.toggle_activation) {
-            UserModeClient().TrayCommand(
-                g_ascii_mode.load() ? ID_WEASELTRAY_DISABLE_ASCII
-                                    : ID_WEASELTRAY_ENABLE_ASCII);
+            UserModeClient().TrayCommand(g_ascii_mode.load()
+                                             ? ID_WEASELTRAY_DISABLE_ASCII
+                                             : ID_WEASELTRAY_ENABLE_ASCII);
             UserModeClient().ProcessKeyEvent(
-                weasel::KeyEvent(ibus::Control_L, 0)); // refresh status/ctx
+                weasel::KeyEvent(ibus::Control_L, 0));  // refresh status/ctx
             DrainResponse();
           }
           continue;
@@ -1185,8 +1274,8 @@ LRESULT CALLBACK KeyboardHook(int code, WPARAM wparam, LPARAM lparam) {
   if (hook.vkCode == VK_SPACE) {
     // Toggle exactly once per physical Ctrl+Space press, not once per
     // autorepeat. Still swallow the matching release if Ctrl is let go first.
-    pending.toggle_activation = key_down && IsPressed(VK_CONTROL) &&
-                                !g_toggle_space_down;
+    pending.toggle_activation =
+        key_down && IsPressed(VK_CONTROL) && !g_toggle_space_down;
     if (key_down && IsPressed(VK_CONTROL))
       g_toggle_space_down = true;
     pending.language_toggle = g_toggle_space_down;
@@ -1277,7 +1366,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR command_line, int) {
   }
   // No TSF profile or global injection is needed for this click-through popup.
   if (!g_overlay.Create(instance))
-    SetOverlayMode(0);  // Never suppress server preedit if overlay is unavailable.
+    SetOverlayMode(
+        0);  // Never suppress server preedit if overlay is unavailable.
   const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   const bool com_initialized = SUCCEEDED(com_result);
   if (com_initialized) {
