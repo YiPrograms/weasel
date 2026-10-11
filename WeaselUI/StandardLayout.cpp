@@ -8,7 +8,19 @@ std::wstring StandardLayout::GetLabelText(const std::vector<Text>& labels,
                                           const wchar_t* format) const {
   wchar_t buffer[128];
   swprintf_s<128>(buffer, format, labels.at(id).str.c_str());
-  return std::wstring(buffer);
+  std::wstring rendered(buffer);
+  // Onion's select labels sometimes arrive with the number/dot embedded in
+  // the formatted string (e.g. "1.QY"), regardless of label_format. Display
+  // compact numeric labels for the screenshot theme without changing Rime's
+  // actual selection keys. Native TSF clients retain their existing labels.
+  wchar_t portable[4] = {};
+  if (GetEnvironmentVariableW(L"WEASEL_USER_MODE", portable,
+                              _countof(portable)) == 1 &&
+      portable[0] == L'1' && rendered.size() >= 3 &&
+      rendered[0] >= L'0' && rendered[0] <= L'9' &&
+      rendered[1] == L'.')
+    rendered.erase(1, 1);
+  return rendered;
 }
 
 void weasel::StandardLayout::GetTextSizeDW(
